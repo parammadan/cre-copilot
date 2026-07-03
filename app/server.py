@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "functions"))
 from shared import kusto  # noqa: E402
-from agents.assistants import run_stream_sync  # noqa: E402 (hosted Azure OpenAI assistants)
+from agents.assistants import run_stream_sync, run_stream_dynamic  # noqa: E402 (hosted Azure OpenAI assistants)
 
 HERE = os.path.dirname(__file__)
 ROOT = os.path.join(HERE, "..")
@@ -136,17 +136,19 @@ def state() -> JSONResponse:
 
 
 @app.get("/api/incident/stream")
-async def incident_stream() -> StreamingResponse:
+async def incident_stream(request: Request) -> StreamingResponse:
     """SSE: streams the HOSTED Azure-assistant conversation live. The assistants SDK is
-    synchronous, so we run it in a thread and bridge events to async via a queue."""
+    synchronous, so we run it in a thread and bridge events to async via a queue.
+    ?mode=dynamic runs the autonomous investigation; default is the fixed pipeline."""
     import asyncio
     import threading
+    gen = run_stream_dynamic if request.query_params.get("mode") == "dynamic" else run_stream_sync
     q: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_event_loop()
 
     def worker():
         try:
-            for ev in run_stream_sync():
+            for ev in gen():
                 loop.call_soon_threadsafe(q.put_nowait, ev)
         except Exception as e:
             loop.call_soon_threadsafe(q.put_nowait, {"type": "error", "message": str(e)[:200]})

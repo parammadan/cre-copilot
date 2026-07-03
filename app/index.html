@@ -539,16 +539,19 @@ function setChip(a,s){ const el=document.getElementById('chip-'+a); if(el){el.cl
 function addTurn(agent){
   const t=document.getElementById('transcript'); const d=document.createElement('div'); d.className='turn';
   d.innerHTML=`<div class="who">${agent}</div><div class="tools"></div><div class="body"></div>`;
-  t.appendChild(d); return {body:d.querySelector('.body'), tools:d.querySelector('.tools')};
+  t.appendChild(d); return {el:d, body:d.querySelector('.body'), tools:d.querySelector('.tools')};
 }
 function runIncident(onDone){
   const btn=document.getElementById('runBtn'); btn.disabled=true; btn.textContent="▶ agents working…";
   const t=document.getElementById('transcript'); t.innerHTML=""; AGENTS.forEach(a=>setChip(a,''));
-  const es=new EventSource('/api/incident/stream'); let cur=null;
+  const mode=new URLSearchParams(location.search).get('mode');
+  const es=new EventSource('/api/incident/stream'+(mode?('?mode='+encodeURIComponent(mode)):'')); let cur=null;
+  if(mode==='dynamic'){ document.getElementById('statusText').textContent="🧭 autonomous investigation (dynamic mode)"; }
   es.onmessage=e=>{ const ev=JSON.parse(e.data);
     if(ev.type==='agent_start'){ setChip(ev.agent,'active'); cur=addTurn(ev.agent); }
     else if(ev.type==='token'&&cur){ cur.body.textContent+=ev.text; t.scrollTop=t.scrollHeight; }
     else if(ev.type==='tool_call'&&cur){ const s=document.createElement('span'); s.className='tooltag'; s.textContent='⚙ '+ev.tool+'()'; cur.tools.appendChild(s); }
+    else if(ev.type==='evidence'&&cur){ const x=document.createElement('div'); x.className='cf'; x.style.cssText='margin:4px 0;font-size:11.5px'; x.textContent='🔍 '+ev.tool+' → '+ev.summary; cur.el.appendChild(x); t.scrollTop=t.scrollHeight; }
     else if(ev.type==='agent_end'){ setChip(ev.agent,'done'); }
     else if(ev.type==='error'&&cur){ cur.body.textContent+='\n[error] '+ev.message; }
     else if(ev.type==='done'){ es.close(); btn.disabled=false; btn.textContent="▶ Run incident response"; load().then(()=>{ showApproval(); if(onDone) onDone(); }); }

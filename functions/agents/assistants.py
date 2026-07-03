@@ -345,6 +345,92 @@ def run_stream_sync():
     yield {"type": "done"}
 
 
+# ===================== DYNAMIC (autonomous) INVESTIGATION MODE =====================
+# One orchestrator agent decides which READ-ONLY tool to call next, based on evidence.
+# Guardrails: read-only toolset (+ deterministic apply_gate), max 8 tool calls, NO
+# remediation tool, human approval still required before recovery. Falls back to fixed.
+_DYN_ID = None
+MAX_STEPS = 8
+DYN_KICKOFF = ("A live-site incident may be occurring. Investigate AUTONOMOUSLY: at each step call the single "
+               "most useful read-only tool based on the evidence so far, and first say briefly (a) what the last "
+               "evidence showed and (b) why you're calling the next tool. Start broad (detect, get_alerts, "
+               "detect_trend), then drill into the suspect service (get_service_health, get_logs, correlate, "
+               "assess_impact, match_runbook). When you have a root cause + confidence, call apply_gate ONCE for the "
+               "deterministic decision, then STOP with a 2-line summary. You have NO remediation tools — you "
+               "recommend; a human approves the fix. Use at most 8 tool calls.")
+
+
+def _dynamic_agent():
+    global _DYN_ID
+    if _DYN_ID:
+        return _DYN_ID
+    tools = [TOOLDEFS[t] for t in ("detect", "get_alerts", "detect_trend", "get_service_health", "get_logs",
+                                   "correlate", "assess_impact", "match_runbook", "apply_gate")]  # all read-only/pure
+    existing = {a.name: a for a in client.beta.assistants.list(limit=100).data if a.name == "CRE-Orchestrator"}
+    if "CRE-Orchestrator" in existing:
+        a = client.beta.assistants.update(existing["CRE-Orchestrator"].id, model=MODEL, instructions=DYN_KICKOFF, tools=tools)
+    else:
+        a = client.beta.assistants.create(model=MODEL, name="CRE-Orchestrator", instructions=DYN_KICKOFF, tools=tools)
+    _DYN_ID = a.id
+    return _DYN_ID
+
+
+def _consume_dynamic(stream, thread_id, name, counter):
+    with stream as s:
+        for event in s:
+            et = event.event
+            if et == "thread.message.delta":
+                for block in (event.data.delta.content or []):
+                    if getattr(block, "type", "") == "text" and block.text and block.text.value:
+                        yield {"type": "token", "agent": name, "text": block.text.value}
+            elif et == "thread.run.requires_action":
+                run_obj = event.data
+                outs = []
+                for tc in run_obj.required_action.submit_tool_outputs.tool_calls:
+                    counter[0] += 1
+                    if counter[0] > MAX_STEPS:
+                        try:
+                            client.beta.threads.runs.cancel(thread_id=thread_id, run_id=run_obj.id)
+                        except Exception:
+                            pass
+                        yield {"type": "tool_call", "agent": name, "tool": f"(step cap reached — {MAX_STEPS})"}
+                        return
+                    obs.log_tool(_TRACE, name, tc.function.name)
+                    yield {"type": "tool_call", "agent": name, "tool": tc.function.name}
+                    out = DISPATCH.get(tc.function.name, lambda a: "{}")(json.loads(tc.function.arguments or "{}"))
+                    yield {"type": "evidence", "agent": name, "tool": tc.function.name, "summary": str(out)[:180]}
+                    outs.append({"tool_call_id": tc.id, "output": out})
+                nxt = client.beta.threads.runs.submit_tool_outputs_stream(
+                    thread_id=thread_id, run_id=run_obj.id, tool_outputs=outs)
+                yield from _consume_dynamic(nxt, thread_id, name, counter)
+                return
+
+
+def run_stream_dynamic():
+    """Autonomous investigation: the Commander picks tools step by step. Falls back to fixed on error."""
+    global _TRACE
+    _TRACE = obs.new_trace()
+    obs.log("incident.dynamic_started", trace=_TRACE)
+    yield {"type": "incident_start", "trace": _TRACE, "mode": "dynamic"}
+    yield {"type": "agent_start", "agent": "Commander"}
+    try:
+        aid = _dynamic_agent()
+        tid = client.beta.threads.create().id
+        client.beta.threads.messages.create(thread_id=tid, role="user", content=DYN_KICKOFF)
+        counter = [0]
+        yield from _consume_dynamic(client.beta.threads.runs.stream(thread_id=tid, assistant_id=aid),
+                                    tid, "Commander", counter)
+        yield {"type": "agent_end", "agent": "Commander"}
+        obs.log("incident.dynamic_done", trace=_TRACE, steps=counter[0])
+        yield {"type": "done", "mode": "dynamic"}
+    except Exception as e:
+        obs.log("incident.dynamic_failed", trace=_TRACE, error=str(e)[:150])
+        yield {"type": "token", "agent": "Commander",
+               "text": f"\n[dynamic mode error: {str(e)[:70]} — falling back to fixed pipeline]\n"}
+        yield {"type": "agent_end", "agent": "Commander"}
+        yield from run_stream_sync()   # safe fallback
+
+
 if __name__ == "__main__":
     run()
 
