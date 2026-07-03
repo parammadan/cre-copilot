@@ -34,3 +34,18 @@ def test_auto_decision_carries_rollback_action():
     assert isinstance(d, GateDecision)
     assert "rollback" in d.remediation
     assert d.confidence == 0.95 and d.threshold == ACT_THRESHOLD
+
+
+def test_threshold_is_single_source_of_truth():
+    from shared.settings import ACT_THRESHOLD as SETTING
+    assert ACT_THRESHOLD == SETTING          # gate + everything else read the same value
+
+
+def test_extreme_confidences():
+    assert decide(1.0, "svc", "v1").action == "auto_remediate"
+    assert decide(0.0, "svc", "v1").action == "escalate"
+
+
+def test_escalation_never_claims_a_rollback():
+    d = decide(0.4, "auth", "v8.0.0")
+    assert d.action == "escalate" and "rollback" not in d.remediation

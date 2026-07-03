@@ -16,8 +16,10 @@ warnings.filterwarnings("ignore")
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from openai import AzureOpenAI
 
-from shared import kusto
+from shared import kusto, obs
 from shared.confidence import decide
+
+_TRACE = None  # correlation id for the current incident run
 
 ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT", "https://crecopilot-aoai-vxxmsm.openai.azure.com/")
 MODEL = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-5-mini")
@@ -56,6 +58,7 @@ def t_impact(a):
     return kusto.query(f"ImpactAssessment('{_svc(a.get('service_name',''))}')").to_json(orient="records")
 def t_gate(a):
     d = decide(float(a.get("confidence",0)), _svc(a.get("service_name","")), str(a.get("version",""))[:20])
+    obs.log_decision(_TRACE, _svc(a.get("service_name","")), d.confidence, d.action, d.threshold)
     return json.dumps({"action": d.action, "confidence": d.confidence, "threshold": d.threshold,
                        "remediation": d.remediation, "reason": d.reason})
 
@@ -153,6 +156,7 @@ def _consume(stream, thread_id, name):
                 run_obj = event.data
                 outs = []
                 for tc in run_obj.required_action.submit_tool_outputs.tool_calls:
+                    obs.log_tool(_TRACE, name, tc.function.name)
                     yield {"type": "tool_call", "agent": name, "tool": tc.function.name}
                     args = json.loads(tc.function.arguments or "{}")
                     outs.append({"tool_call_id": tc.id,
@@ -165,14 +169,18 @@ def _consume(stream, thread_id, name):
 
 def run_stream_sync():
     """Sync generator of UI events across the hosted assistants (bridged to SSE by the server)."""
+    global _TRACE
+    _TRACE = obs.new_trace()
+    obs.log("incident.run_started", trace=_TRACE)
     agents = _ensure_assistants()
     thread = client.beta.threads.create()
     client.beta.threads.messages.create(thread_id=thread.id, role="user", content=KICKOFF)
-    yield {"type": "incident_start"}
+    yield {"type": "incident_start", "trace": _TRACE}
     for name, aid in agents:
         yield {"type": "agent_start", "agent": name}
         yield from _consume(client.beta.threads.runs.stream(thread_id=thread.id, assistant_id=aid), thread.id, name)
         yield {"type": "agent_end", "agent": name}
+    obs.log("incident.run_done", trace=_TRACE)
     yield {"type": "done"}
 
 

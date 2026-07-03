@@ -70,12 +70,13 @@ def state() -> JSONResponse:
     )
     incidents = []
     for a in alerts.itertuples(index=False):
+      try:  # one bad alert must not sink the whole page
         aiso = pd.Timestamp(a.Timestamp).strftime("%Y-%m-%dT%H:%M:%SZ")
-        cand = kusto.query(f"Correlate('{a.Service}', datetime({aiso}))")
+        cand = kusto.query_safe(f"Correlate('{a.Service}', datetime({aiso}))")
         if cand.empty:
             continue
         top = cand.iloc[0]
-        impact = kusto.query(f"ImpactAssessment('{top.Service}')")
+        impact = kusto.query_safe(f"ImpactAssessment('{top.Service}')")
         incidents.append({
             "alertService": a.Service, "severity": a.Severity,
             "alertTime": pd.Timestamp(a.Timestamp).strftime("%H:%M"),
@@ -85,6 +86,10 @@ def state() -> JSONResponse:
                           "confidence": float(top.confidence)},
             "impact": _records(impact),
         })
+      except Exception as e:
+        from shared.obs import log
+        log("state.incident_failed", alert=str(getattr(a, "Service", "?")), error=str(e)[:160])
+        continue
 
     # Current health = recent (8 min) latency vs each service's baseline — this is what
     # heals RED->GREEN after remediation (unlike Detect(), which analyses the incident).
@@ -97,7 +102,7 @@ def state() -> JSONResponse:
     health_map = {r.Service: float(r.ratio) for r in health.itertuples(index=False)}
 
     # Proactive: rising trends projected to breach (may exist with NO alert yet).
-    trends = _records(kusto.query("DetectTrend() | where willBreach == true"))
+    trends = _records(kusto.query_safe("DetectTrend() | where willBreach == true"))
 
     m = kusto.query(
         "Incidents | summarize Total=count(), "
@@ -116,6 +121,7 @@ def state() -> JSONResponse:
         "services": services["Service"].tolist(),
         "health": health_map,
         "trends": trends,
+        "threshold": __import__("shared.settings", fromlist=["ACT_THRESHOLD"]).ACT_THRESHOLD,
         "edges": [{"from": r.DependsOn, "to": r.Service} for r in deps.itertuples(index=False)],
         "anomalies": _records(anomalies),
         "telemetry": tel,
@@ -189,6 +195,103 @@ async def remediate(req: Request) -> JSONResponse:
         "| project Timestamp, Service, Metric, Value, Environment"
     )
     return JSONResponse({"healed": healed})
+
+
+# ============================ INTERACTIVE SIMULATOR ============================
+# Knobs mutate SIM_STATE; _apply_sim() writes telemetry FORWARD into Kusto reflecting
+# it, so the Detector (recent window) + agents react to whatever the operator changes.
+SIM_STATE = {"traffic": 1.0, "noise": 1.0, "services": {}}  # services: {svc: {lat, err}}
+_SVCS = None
+_DOWNSTREAM = None
+
+
+def _svcs():
+    global _SVCS
+    if _SVCS is None:
+        _SVCS = kusto.query("Telemetry | distinct Service")["Service"].tolist()
+    return _SVCS
+
+
+def _downstream():
+    global _DOWNSTREAM
+    if _DOWNSTREAM is None:
+        d = kusto.query("ServiceDependencies")  # Service DependsOn upstream
+        m: dict[str, list] = {}
+        for r in d.itertuples(index=False):
+            m.setdefault(r.DependsOn, []).append(r.Service)   # downstream_of[upstream] = [service]
+        _DOWNSTREAM = m
+    return _DOWNSTREAM
+
+
+def _apply_sim():
+    """Write ~8 min of telemetry forward for every service reflecting the current knobs."""
+    t0 = pd.Timestamp(kusto.query("Telemetry | summarize m=max(Timestamp)").iloc[0].m).strftime("%Y-%m-%dT%H:%M:%SZ")
+    eff = {s: {"lat": SIM_STATE["traffic"] * SIM_STATE["services"].get(s, {}).get("lat", 1.0),
+               "err": SIM_STATE["services"].get(s, {}).get("err", 1.0)} for s in _svcs()}
+    # blast radius: a badly degraded service drags its downstream dependents up too
+    for s in _svcs():
+        if eff[s]["lat"] >= 4:
+            for down in _downstream().get(s, []):
+                eff[down]["lat"] = max(eff[down]["lat"], 2.3)
+    rows = ",".join(f"'{s}',real({eff[s]['lat']}),real({eff[s]['err']})" for s in _svcs())
+    noise = SIM_STATE["noise"]
+    kusto.command(
+        ".set-or-append Telemetry <| "
+        f"let t0=datetime({t0}); let mult=datatable(Service:string, latM:real, errM:real)[{rows}]; "
+        "let base=Telemetry|where Timestamp between (t0-4h..t0-30m) and Metric in ('latency_ms','error_rate')|summarize b=avg(Value) by Service,Metric; "
+        "base | join kind=inner mult on Service | extend m=iff(Metric=='latency_ms', latM, errM) "
+        "| extend d=1 | join kind=inner (range i from 1 to 8 step 1|extend d=1) on d "
+        f"| extend Timestamp=t0+i*1m, Value=b*m*(1.0+({noise})*(rand()-0.5)*0.2), Environment='prod' "
+        "| project Timestamp, Service, Metric, Value, Environment")
+
+
+def _sanitize(s):
+    return "".join(c for c in str(s) if c.isalnum() or c in "-_")
+
+
+@app.post("/api/sim/traffic")
+async def sim_traffic(req: Request) -> JSONResponse:
+    SIM_STATE["traffic"] = max(0.5, min(4.0, float((await req.json()).get("value", 1.0))))
+    _apply_sim(); return JSONResponse({"traffic": SIM_STATE["traffic"]})
+
+
+@app.post("/api/sim/noise")
+async def sim_noise(req: Request) -> JSONResponse:
+    SIM_STATE["noise"] = max(0.0, min(5.0, float((await req.json()).get("value", 1.0))))
+    _apply_sim(); return JSONResponse({"noise": SIM_STATE["noise"]})
+
+
+@app.post("/api/sim/errors")
+async def sim_errors(req: Request) -> JSONResponse:
+    b = await req.json(); svc = _sanitize(b.get("service", "")); lvl = float(b.get("value", 6.0))
+    if svc: SIM_STATE["services"].setdefault(svc, {})["err"] = lvl
+    _apply_sim(); return JSONResponse({"service": svc, "err": lvl})
+
+
+@app.post("/api/sim/deploy")
+async def sim_deploy(req: Request) -> JSONResponse:
+    svc = _sanitize((await req.json()).get("service", ""))
+    if not svc: return JSONResponse({"error": "no service"}, status_code=400)
+    SIM_STATE["services"].setdefault(svc, {}).update(lat=5.0, err=12.0)   # bad deploy = latency+error spike
+    t0 = pd.Timestamp(kusto.query("Telemetry | summarize m=max(Timestamp)").iloc[0].m).strftime("%Y-%m-%dT%H:%M:%SZ")
+    kusto.command(f".set-or-append Deployments <| print Timestamp=datetime({t0}), Service='{svc}', "
+                  "Version='v9.9.9', CommitId='baddeploy', Author='demo', Pipeline='azure-pipelines-ci', Environment='prod'")
+    kusto.command(f".set-or-append Alerts <| print Timestamp=datetime({t0})+9m, AlertId='ALT-sim', Service='{svc}', "
+                  f"Metric='latency_ms', Severity='Sev2', Threshold=300.0, ObservedValue=640.0, Description='{svc} p95 latency breached 300ms threshold'")
+    _apply_sim(); return JSONResponse({"service": svc, "injected": "bad deploy"})
+
+
+@app.post("/api/sim/kill")
+async def sim_kill(req: Request) -> JSONResponse:
+    svc = _sanitize((await req.json()).get("service", ""))
+    if svc: SIM_STATE["services"].setdefault(svc, {}).update(lat=8.0, err=20.0)  # cascades to downstream in _apply_sim
+    _apply_sim(); return JSONResponse({"service": svc, "killed": True})
+
+
+@app.post("/api/sim/reset")
+async def sim_reset() -> JSONResponse:
+    SIM_STATE["traffic"] = 1.0; SIM_STATE["noise"] = 1.0; SIM_STATE["services"] = {}
+    _apply_sim(); return JSONResponse({"reset": True})
 
 
 @app.post("/api/break")

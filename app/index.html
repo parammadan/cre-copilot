@@ -67,6 +67,13 @@
   .turn{ border-left-color:var(--neon); }
   .turn .who{ color:#7fe6ff; }
   .tooltag{ background:rgba(56,225,255,.14); color:#8fe8ff; }
+  .knobs{ display:grid; grid-template-columns:repeat(4,1fr); gap:16px; align-items:end; }
+  @media(max-width:980px){ .knobs{ grid-template-columns:repeat(2,1fr); } }
+  .knob label{ display:block; font-size:12px; color:var(--ink2); margin-bottom:6px; }
+  .knob label span{ color:var(--neon); font-variant-numeric:tabular-nums; }
+  .knob select{ width:100%; background:#0c1520; color:var(--ink); border:1px solid var(--border); border-radius:8px; padding:8px; }
+  .knob.btns{ display:flex; flex-wrap:wrap; gap:8px; }
+  .knob.btns .btn{ padding:7px 10px; font-size:12px; }
   .dot{width:8px;height:8px;border-radius:50%;background:var(--good);display:inline-block;margin-right:6px;
     box-shadow:0 0 0 0 rgba(12,163,12,.6);animation:pulse 2s infinite}
   @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(12,163,12,.5)}70%{box-shadow:0 0 0 7px rgba(12,163,12,0)}100%{box-shadow:0 0 0 0 rgba(12,163,12,0)}}
@@ -127,6 +134,7 @@
     <div style="display:flex;align-items:center;gap:14px">
       <span class="sub"><span class="dot" id="statusDot"></span><span id="statusText">connecting…</span></span>
       <button class="btn ghost" id="resetBtn">⟳ New data</button>
+      <button class="btn ghost" id="simBtn">🎮 Simulate</button>
       <button class="btn" id="runBtn">▶ Run incident response</button>
     </div>
   </header>
@@ -141,6 +149,31 @@
     </div>
     <div class="sub" style="max-width:340px">Drag to change policy. Watch incidents flip between
       <b style="color:var(--good)">🤖 auto-remediate</b> and <b style="color:var(--warning)">🧑 escalate</b> in real time.</div>
+  </div>
+
+  <div class="card" id="sandbox">
+    <h2>🎛 Sandbox controls — change conditions live</h2>
+    <div class="hint">Each knob writes telemetry to Kusto → the Detector picks it up → the agents react. Change something, then hit ▶ Run incident response.</div>
+    <div class="knobs">
+      <div class="knob">
+        <label>Traffic volume <span id="trafVal">1.0×</span></label>
+        <input type="range" id="traffic" min="0.5" max="4" step="0.1" value="1">
+      </div>
+      <div class="knob">
+        <label>Baseline noise <span id="noiseVal">1.0×</span></label>
+        <input type="range" id="noise" min="0" max="5" step="0.2" value="1">
+      </div>
+      <div class="knob">
+        <label>Target service</label>
+        <select id="simsvc"></select>
+      </div>
+      <div class="knob btns">
+        <button class="btn ghost" id="badDeployBtn">💥 Bad deploy</button>
+        <button class="btn ghost" id="injErrBtn">⚠️ Inject errors</button>
+        <button class="btn ghost" id="killBtn">☠️ Kill service</button>
+        <button class="btn ghost" id="sandReset">⟳ Reset sandbox</button>
+      </div>
+    </div>
   </div>
 
   <div class="card" id="agentCard">
@@ -384,7 +417,8 @@ async function load(){
   const r=await fetch('/api/state'); STATE=await r.json();
   document.getElementById('statusDot').style.background="var(--good)";
   document.getElementById('statusText').textContent="live · "+STATE.incidents.length+" active incident(s)";
-  renderChips(); renderAll();
+  if(!window._thInit && STATE.threshold!=null){ const s=document.getElementById('thresh'); s.value=STATE.threshold; document.getElementById('thVal').textContent=(+STATE.threshold).toFixed(2); window._thInit=true; }
+  renderChips(); populateSimSvc(); renderAll();
   if(new URLSearchParams(location.search).has('autorun')) setTimeout(runIncident, 700);
 }
 
@@ -400,7 +434,7 @@ function addTurn(agent){
   d.innerHTML=`<div class="who">${agent}</div><div class="tools"></div><div class="body"></div>`;
   t.appendChild(d); return {body:d.querySelector('.body'), tools:d.querySelector('.tools')};
 }
-function runIncident(){
+function runIncident(onDone){
   const btn=document.getElementById('runBtn'); btn.disabled=true; btn.textContent="▶ agents working…";
   const t=document.getElementById('transcript'); t.innerHTML=""; AGENTS.forEach(a=>setChip(a,''));
   const es=new EventSource('/api/incident/stream'); let cur=null;
@@ -410,10 +444,56 @@ function runIncident(){
     else if(ev.type==='tool_call'&&cur){ const s=document.createElement('span'); s.className='tooltag'; s.textContent='⚙ '+ev.tool+'()'; cur.tools.appendChild(s); }
     else if(ev.type==='agent_end'){ setChip(ev.agent,'done'); }
     else if(ev.type==='error'&&cur){ cur.body.textContent+='\n[error] '+ev.message; }
-    else if(ev.type==='done'){ es.close(); btn.disabled=false; btn.textContent="▶ Run incident response"; load().then(showApproval); }
+    else if(ev.type==='done'){ es.close(); btn.disabled=false; btn.textContent="▶ Run incident response"; load().then(()=>{ showApproval(); if(onDone) onDone(); }); }
   };
-  es.onerror=()=>{ es.close(); btn.disabled=false; btn.textContent="▶ Run incident response"; };
+  es.onerror=()=>{ es.close(); btn.disabled=false; btn.textContent="▶ Run incident response"; if(onDone) onDone(); };
 }
+
+/* ---------- SIMULATOR: continuous autonomous ops loop ---------- */
+let SIM=false, SIM_N=0;
+function toggleSim(e){
+  SIM=!SIM; const b=e.target;
+  b.textContent = SIM ? "⏹ Stop simulator" : "🎮 Simulate";
+  b.classList.toggle('ghost', !SIM);
+  if(SIM) simStep();
+}
+function simStep(){
+  if(!SIM) return;
+  const th=parseFloat(document.getElementById('thresh').value);
+  const healthy=(STATE.services||[]).filter(s=>((STATE.health||{})[s]||1) < 1.25);
+  const pool = healthy.length ? healthy : (STATE.services||[]);
+  const svc = pool[Math.floor(Math.random()*pool.length)];
+  document.getElementById('statusText').textContent="🎮 simulator — breaking "+svc+" (cycle "+(SIM_N+1)+")";
+  fetch('/api/break',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({service:svc})})
+    .then(()=>load()).then(()=>runIncident(()=>{
+      // auto-approve high-confidence remediations (autonomous), leave the rest escalated
+      const th2=parseFloat(document.getElementById('thresh').value);
+      const auto=(STATE.incidents||[]).filter(i=>i.rootCause.confidence>=th2);
+      Promise.all(auto.map(i=>fetch('/api/remediate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({service:i.rootCause.service})})))
+        .then(()=>load()).then(()=>{ SIM_N++; if(SIM) setTimeout(simStep, 3500); });
+    }));
+}
+document.getElementById('simBtn').addEventListener('click',toggleSim);
+
+/* ---------- sandbox control panel ---------- */
+function populateSimSvc(){
+  const sel=document.getElementById('simsvc'); if(!sel||sel.options.length) return;
+  sel.innerHTML=(STATE.services||[]).map(s=>`<option>${s}</option>`).join('');
+}
+async function simPost(url, body, label){
+  document.getElementById('statusText').textContent="🎛 "+(label||'sandbox update')+"…";
+  await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
+  await load();
+  document.getElementById('statusText').textContent="live · "+STATE.incidents.length+" active incident(s) · sandbox changed — hit ▶ Run";
+}
+document.getElementById('traffic').addEventListener('input',e=>document.getElementById('trafVal').textContent=(+e.target.value).toFixed(1)+'×');
+document.getElementById('traffic').addEventListener('change',e=>simPost('/api/sim/traffic',{value:+e.target.value},'traffic '+(+e.target.value).toFixed(1)+'×'));
+document.getElementById('noise').addEventListener('input',e=>document.getElementById('noiseVal').textContent=(+e.target.value).toFixed(1)+'×');
+document.getElementById('noise').addEventListener('change',e=>simPost('/api/sim/noise',{value:+e.target.value},'noise '+(+e.target.value).toFixed(1)+'×'));
+document.getElementById('badDeployBtn').addEventListener('click',()=>simPost('/api/sim/deploy',{service:document.getElementById('simsvc').value},'bad deploy → '+document.getElementById('simsvc').value));
+document.getElementById('injErrBtn').addEventListener('click',()=>simPost('/api/sim/errors',{service:document.getElementById('simsvc').value,value:8},'errors → '+document.getElementById('simsvc').value));
+document.getElementById('killBtn').addEventListener('click',()=>simPost('/api/sim/kill',{service:document.getElementById('simsvc').value},'kill → '+document.getElementById('simsvc').value));
+document.getElementById('sandReset').addEventListener('click',()=>simPost('/api/sim/reset',{},'reset sandbox'));
 
 /* ---------- human-in-the-loop approval + cure loop ---------- */
 function showApproval(){

@@ -7,8 +7,10 @@ Kept out of the agents (and out of any GUI) so it can be reviewed and tuned in o
 from __future__ import annotations
 from dataclasses import dataclass
 
-# Act autonomously at/above this confidence; escalate below it.
-ACT_THRESHOLD = 0.70
+try:
+    from shared.settings import ACT_THRESHOLD  # single source of truth
+except Exception:
+    ACT_THRESHOLD = 0.70  # safe fallback if settings unavailable
 
 
 @dataclass
