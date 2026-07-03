@@ -41,6 +41,9 @@
   .approval-card{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:12px;padding:12px 14px;border:1px solid rgba(12,163,12,.4);border-radius:10px;background:rgba(12,163,12,.08)}
   .approval-card.esc{border-color:rgba(250,178,25,.4);background:rgba(250,178,25,.07)}
   .approval-card.done{border-color:var(--border);background:var(--surface-2)}
+  .trendbar{margin-bottom:16px;padding:12px 16px;border:1px solid rgba(250,178,25,.45);border-radius:10px;
+    background:rgba(250,178,25,.09);display:flex;align-items:center;gap:10px;font-size:13px}
+  .trendbar b{color:var(--warning)}
   .dot{width:8px;height:8px;border-radius:50%;background:var(--good);display:inline-block;margin-right:6px;
     box-shadow:0 0 0 0 rgba(12,163,12,.6);animation:pulse 2s infinite}
   @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(12,163,12,.5)}70%{box-shadow:0 0 0 7px rgba(12,163,12,0)}100%{box-shadow:0 0 0 0 rgba(12,163,12,0)}}
@@ -124,6 +127,8 @@
     <div class="transcript" id="transcript"><div class="sub">Click “Run incident response” — the agents work in front of you, live.</div></div>
     <div id="approval"></div>
   </div>
+
+  <div id="trendbar"></div>
 
   <div class="grid">
     <div class="stack">
@@ -334,9 +339,17 @@ function renderMetrics(){
   document.getElementById('kMttrDelta').textContent=me?("▼ "+(me-ma)+" min vs human ("+(me/ma).toFixed(1)+"× faster)"):"";
 }
 
+function renderTrends(){
+  const box=document.getElementById('trendbar'); const tr=(STATE.trends||[]);
+  if(!tr.length){ box.innerHTML=""; return; }
+  const t=tr[0];
+  box.className="trendbar";
+  box.innerHTML=`⚠️ <b>Proactive early-warning</b> — ${t.Service} latency climbing (${t.current}ms now,
+    ${t.slopePerMin}ms/min), <b>projected ${t.projected15m}ms → breach in ~15 min</b>. Catch it before it pages.`;
+}
 function renderAll(){
   const th=parseFloat(document.getElementById('thresh').value);
-  renderTopo(); renderSparks(); renderIncidents(th); renderMetrics(); renderHist(th);
+  renderTopo(); renderSparks(); renderIncidents(th); renderMetrics(); renderHist(th); renderTrends();
 }
 document.getElementById('thresh').addEventListener('input',e=>{
   document.getElementById('thVal').textContent=parseFloat(e.target.value).toFixed(2);

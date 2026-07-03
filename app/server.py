@@ -96,6 +96,9 @@ def state() -> JSONResponse:
     )
     health_map = {r.Service: float(r.ratio) for r in health.itertuples(index=False)}
 
+    # Proactive: rising trends projected to breach (may exist with NO alert yet).
+    trends = _records(kusto.query("DetectTrend() | where willBreach == true"))
+
     m = kusto.query(
         "Incidents | summarize Total=count(), "
         "AutoResolved=countif(Status=='auto-resolved'), Escalated=countif(Status=='escalated')"
@@ -112,6 +115,7 @@ def state() -> JSONResponse:
     return JSONResponse({
         "services": services["Service"].tolist(),
         "health": health_map,
+        "trends": trends,
         "edges": [{"from": r.DependsOn, "to": r.Service} for r in deps.itertuples(index=False)],
         "anomalies": _records(anomalies),
         "telemetry": tel,
