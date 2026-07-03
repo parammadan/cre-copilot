@@ -67,6 +67,14 @@
     TimesUsed:   long
 )
 
+// Real logs scraped from the microservices by the collector (evidence for the agents).
+.create-merge table Logs (
+    Timestamp: datetime,
+    Service:   string,
+    Level:     string,
+    Message:   string
+)
+
 // Post-incident reviews written by the Postmortem agent after an incident resolves.
 .create-merge table Postmortems (
     PostmortemId: string,

@@ -148,7 +148,7 @@ def create_schema(client: KustoClient) -> None:
         client.execute_mgmt(DATABASE, cmd)
     print(f"✓ {len(cmds)} tables created")
     # Clear data so re-running this script is idempotent (no duplicate rows).
-    for t in ["Telemetry", "Deployments", "Alerts", "Incidents", "ServiceDependencies", "Runbooks", "Postmortems"]:
+    for t in ["Telemetry", "Deployments", "Alerts", "Incidents", "ServiceDependencies", "Runbooks", "Postmortems", "Logs"]:
         client.execute_mgmt(DATABASE, f".clear table {t} data")
     print("✓ tables cleared for clean reload")
     # Make queued ingestion flush fast so the demo shows data in seconds, not minutes.
