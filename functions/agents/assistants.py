@@ -56,6 +56,36 @@ def t_correlate(a):
     return kusto.query(f"Correlate('{_svc(a.get('alert_service',''))}', datetime({ts}))").to_json(orient="records")
 def t_impact(a):
     return kusto.query(f"ImpactAssessment('{_svc(a.get('service_name',''))}')").to_json(orient="records")
+
+
+# ---- EVIDENCE tools (real service state; graceful if services aren't running) ----
+SERVICE_PORTS = {"checkout-api": 8101, "payment-service": 8102, "inventory-service": 8103, "auth-service": 8104}
+
+
+def t_service_health(a):
+    import requests
+    svc = _svc(a.get("service_name", ""))
+    port = SERVICE_PORTS.get(svc)
+    if not port:
+        return json.dumps({"service": svc, "status": "unknown"})
+    try:
+        return json.dumps(requests.get(f"http://127.0.0.1:{port}/health", timeout=1.5).json())
+    except Exception:
+        return json.dumps({"service": svc, "status": "unreachable", "note": "service not running — rely on telemetry evidence"})
+
+
+def t_get_logs(a):
+    svc = _svc(a.get("service_name", ""))
+    try:
+        c = kusto.query(f"Logs | where Service=='{svc}' and Timestamp>ago(2h) "
+                        "| summarize errors=countif(Level in ('ERROR','FATAL')), warns=countif(Level=='WARN'), total=count()")
+        counts = c.to_dict("records")[0] if not c.empty else {"errors": 0, "warns": 0, "total": 0}
+        s = kusto.query(f"Logs | where Service=='{svc}' and Level in ('ERROR','FATAL','WARN') "
+                        "| top 4 by Timestamp desc | project Level, Message")
+        return json.dumps({"service": svc, "errors": int(counts["errors"]), "warns": int(counts["warns"]),
+                           "samples": s.to_dict("records")})
+    except Exception as e:
+        return json.dumps({"service": svc, "error": str(e)[:120]})
 def t_gate(a):
     d = decide(float(a.get("confidence",0)), _svc(a.get("service_name","")), str(a.get("version",""))[:20])
     obs.log_decision(_TRACE, _svc(a.get("service_name","")), d.confidence, d.action, d.threshold)
@@ -100,7 +130,8 @@ def t_write_postmortem(a):
 DISPATCH = {"detect": t_detect, "get_alerts": t_alerts, "detect_trend": t_trend,
             "correlate": t_correlate, "assess_impact": t_impact, "apply_gate": t_gate,
             "match_runbook": t_match_runbook, "write_runbook": t_write_runbook,
-            "write_postmortem": t_write_postmortem}
+            "write_postmortem": t_write_postmortem,
+            "get_service_health": t_service_health, "get_logs": t_get_logs}
 
 def _fn(name, desc, props=None, required=None):
     return {"type": "function", "function": {"name": name, "description": desc,
@@ -126,17 +157,22 @@ TOOLDEFS = {
                             {"service_name": {"type": "string"}, "review": {"type": "string"},
                              "novel": {"type": "boolean"}, "root_cause": {"type": "string"}},
                             ["service_name", "review"]),
+    "get_service_health": _fn("get_service_health", "Live /health of a service (status + dependency checks).",
+                              {"service_name": {"type": "string"}}, ["service_name"]),
+    "get_logs": _fn("get_logs", "Error/warning counts + recent log lines for a service from the Logs table.",
+                    {"service_name": {"type": "string"}}, ["service_name"]),
 }
 
 AGENTS = [
-    ("Commander", ["detect", "get_alerts", "detect_trend"],
-     "You are the Incident Commander. Call detect(), get_alerts(), detect_trend(). "
-     "Output ONE terse line per finding, e.g. 'ANOMALY payment-service latency+errors (score 95)', "
-     "'ALERT checkout-api Sev2', 'TREND checkout-api → breach ~15m'. No preamble, no next-steps, no paragraphs. End with 'Correlator →'."),
-    ("Correlator", ["correlate"],
-     "You are the Correlator. For EACH alert call correlate(alert_service, alert_time_iso). "
-     "Output ONE line per alert ONLY: '<alert> ROOT CAUSE <service> <version> | conf <0.xxx> | <ratio>x anomaly, upstream, <n>m before'. "
-     "Numbers from the tool only. No prose. End with 'Impact →'."),
+    ("Commander", ["detect", "get_alerts", "detect_trend", "get_service_health", "get_logs"],
+     "You are the Incident Commander. Call detect(), get_alerts(), detect_trend(); then for each anomalous "
+     "service call get_service_health() and get_logs() to gather REAL evidence. Output terse lines citing that "
+     "evidence, e.g. 'payment-service /health=degraded, Logs 38 errors (score 95)', 'ALERT checkout-api Sev2', "
+     "'TREND checkout-api → breach ~15m'. No prose, no next-steps. End with 'Correlator →'."),
+    ("Correlator", ["correlate", "get_logs"],
+     "You are the Correlator. For EACH alert call correlate(alert_service, alert_time_iso); optionally get_logs(root_service) "
+     "for supporting error evidence. Output ONE line per alert ONLY: '<alert> ROOT CAUSE <service> <version> | conf <0.xxx> "
+     "| <ratio>x anomaly, upstream, <n>m before | Logs <e> errors'. Numbers from tools only. No prose. End with 'Impact →'."),
     ("Impact", ["assess_impact"],
      "You are the Impact analyst. Call assess_impact(service_name) for each root cause. "
      "Output ONE line per affected service ONLY: '<service> <ratio>x latency (degraded)'. No prose. End with 'Gate →'."),
@@ -191,7 +227,8 @@ def _copilot():
     if _COPILOT_ID:
         return _COPILOT_ID
     tools = [TOOLDEFS[t] for t in ("detect", "get_alerts", "detect_trend", "correlate",
-                                   "assess_impact", "apply_gate", "match_runbook", "write_runbook")]
+                                   "assess_impact", "apply_gate", "match_runbook", "write_runbook",
+                                   "get_service_health", "get_logs")]
     instr = ("You are CRE Copilot, an SRE assistant for the live incident console. Answer questions about "
              "the CURRENT live-site state using your tools — anomalies (detect), alerts (get_alerts), "
              "rising trends (detect_trend), root cause + confidence (correlate), blast radius (assess_impact), "
