@@ -21,3 +21,7 @@ DETECT_SUSTAINED_POINTS = int(os.environ.get("CRE_DETECT_SUSTAINED_POINTS", "5")
 
 # --- resilience ---
 KUSTO_TIMEOUT_SEC = int(os.environ.get("CRE_KUSTO_TIMEOUT_SEC", "30"))
+
+# --- Microsoft Teams integration ---
+TEAMS_WEBHOOK_URL = os.environ.get("TEAMS_WEBHOOK_URL", "")           # your channel's Incoming Webhook
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000")  # public URL for the Approve callback

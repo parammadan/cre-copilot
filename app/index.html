@@ -229,6 +229,7 @@
       <button class="btn" id="askBtn">💬 Ask CRE Copilot</button>
       <button class="btn ghost" id="resetBtn">⟳ New data</button>
       <button class="btn ghost" id="simBtn">🎮 Simulate</button>
+      <button class="btn ghost" id="teamsBtn">📣 Post to Teams</button>
       <button class="btn" id="runBtn">▶ Run incident response</button>
     </div>
   </header>
@@ -613,6 +614,14 @@ async function cpSend(){
     const d=await r.json(); CP_THREAD=d.thread_id||CP_THREAD; think.style.opacity=1; think.textContent=d.answer||'(no answer)';
   }catch(e){ think.textContent='error: '+e; }
 }
+document.getElementById('teamsBtn').addEventListener('click',async e=>{
+  const b=e.target; b.disabled=true; b.textContent="📣 posting…";
+  try{ const r=await fetch('/api/teams/notify',{method:'POST'}); const d=await r.json();
+    document.getElementById('statusText').textContent = d.posted ? "posted incident card to Teams ✓"
+      : ("Teams: "+(d.reason||"webhook not set")+" (set TEAMS_WEBHOOK_URL)"); }
+  catch(err){ document.getElementById('statusText').textContent="Teams post failed"; }
+  b.disabled=false; b.textContent="📣 Post to Teams";
+});
 document.getElementById('askBtn').addEventListener('click',cpToggle);
 document.getElementById('cpClose').addEventListener('click',cpToggle);
 document.getElementById('cpSend').addEventListener('click',cpSend);

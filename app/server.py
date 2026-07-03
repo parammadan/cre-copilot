@@ -165,21 +165,15 @@ async def incident_stream() -> StreamingResponse:
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-@app.post("/api/remediate")
-async def remediate(req: Request) -> JSONResponse:
-    """Simulate the rollback taking effect: write recovery telemetry (baseline values,
-    going forward) for the root-cause service AND its downstream victims. Synchronous
-    .set-or-append -> queryable immediately -> the dashboard heals RED->GREEN at once."""
-    body = await req.json()
-    service = "".join(c for c in str(body.get("service", "")) if c.isalnum() or c in "-_")
+def _remediate_service(service: str) -> list:
+    """Shared remediation: write recovery telemetry (baseline, forward) for the service +
+    its downstream victims so the dashboard heals RED->GREEN. Used by the console AND Teams."""
+    service = "".join(c for c in str(service) if c.isalnum() or c in "-_")
     if not service:
-        return JSONResponse({"error": "no service"}, status_code=400)
+        return []
     deps = kusto.query(f"ServiceDependencies | where DependsOn=='{service}' | project Service")
     healed = [service] + deps["Service"].tolist()
     healed_kql = "dynamic([" + ",".join(f"'{s}'" for s in healed) + "])"
-    # Continue EVERY service 15 min forward so none drop out of the recent window:
-    #   healed services -> return to baseline; others -> continue their current level
-    #   (so the escalated 'auth' stays elevated, healthy services stay healthy).
     kusto.command(
         ".set-or-append Telemetry <| "
         "let tmax=toscalar(Telemetry|summarize max(Timestamp)); "
@@ -192,9 +186,19 @@ async def remediate(req: Request) -> JSONResponse:
         "| extend target=iff(set_has_element(healed, Service), b, r); "
         "range i from 1 to 15 step 1 | extend d=1 | join kind=inner (targets|extend d=1) on d "
         "| extend Timestamp=tmax+i*1m, Value=target*(1.0+(rand()-0.5)*0.08), Environment='prod' "
-        "| project Timestamp, Service, Metric, Value, Environment"
-    )
-    return JSONResponse({"healed": healed})
+        "| project Timestamp, Service, Metric, Value, Environment")
+    from shared.obs import log
+    log("remediation.applied", service=service, healed=healed)
+    return healed
+
+
+@app.post("/api/remediate")
+async def remediate(req: Request) -> JSONResponse:
+    """Simulate the rollback taking effect (console Approve button)."""
+    service = (await req.json()).get("service", "")
+    if not service:
+        return JSONResponse({"error": "no service"}, status_code=400)
+    return JSONResponse({"healed": _remediate_service(service)})
 
 
 # ============================ INTERACTIVE SIMULATOR ============================
@@ -336,6 +340,42 @@ async def ask_copilot(req: Request) -> JSONResponse:
         return JSONResponse({"answer": answer, "thread_id": tid})
     except Exception as e:
         return JSONResponse({"answer": "Copilot hit an error: " + str(e)[:160], "thread_id": body.get("thread_id")})
+
+
+@app.post("/api/teams/notify")
+async def teams_notify() -> JSONResponse:
+    """Post an Adaptive Card for the current top incident to the Teams channel webhook."""
+    from shared import teams
+    from shared.settings import TEAMS_WEBHOOK_URL, PUBLIC_BASE_URL
+    al = kusto.query_safe("let amax=toscalar(Alerts|summarize max(Timestamp)); "
+                          "Alerts|where Timestamp>amax-60m|top 1 by Severity asc|project Service,Timestamp,Severity")
+    if al.empty:
+        return JSONResponse({"posted": False, "reason": "no active alert"})
+    a = al.iloc[0]
+    aiso = pd.Timestamp(a.Timestamp).strftime("%Y-%m-%dT%H:%M:%SZ")
+    cand = kusto.query_safe(f"Correlate('{a.Service}', datetime({aiso}))")
+    if cand.empty:
+        return JSONResponse({"posted": False, "reason": "no root cause"})
+    top = cand.iloc[0]
+    inc = {"alertService": a.Service, "severity": a.Severity,
+           "rootCause": {"service": top.Service, "version": top.Version, "confidence": float(top.confidence)},
+           "impact": _records(kusto.query_safe(f"ImpactAssessment('{top.Service}')"))}
+    card = teams.build_incident_card(inc, f"{PUBLIC_BASE_URL}/api/teams/approve", PUBLIC_BASE_URL)
+    return JSONResponse(teams.post_card(TEAMS_WEBHOOK_URL, card))
+
+
+@app.get("/api/teams/approve")
+async def teams_approve(service: str = "") -> HTMLResponse:
+    """Approve callback from the Teams card (Action.OpenUrl) — runs remediation."""
+    healed = _remediate_service(service)
+    ok = bool(healed)
+    return HTMLResponse(
+        "<html><body style='font-family:system-ui;background:#0b0d13;color:#e6e8ee;padding:48px;text-align:center'>"
+        + (f"<h2 style='color:#22c55e'>✅ Approved &amp; remediated</h2>"
+           f"<p>Rolled back <b>{service}</b>. Healed: {', '.join(healed)}.</p>"
+           "<p style='color:#868da0'>The console shows RED→GREEN. You can close this tab.</p>"
+           if ok else "<h2 style='color:#d03b3b'>No service specified.</h2>")
+        + "</body></html>")
 
 
 @app.post("/api/reset")
