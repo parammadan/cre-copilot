@@ -1,5 +1,7 @@
 # CRE Copilot
 
+AI-powered multi-agent incident response simulator.
+
 A multi-agent **live-site incident-response** system on Azure. It detects an anomaly,
 correlates it to a root cause with a **confidence score**, and a **confidence gate**
 decides whether to **act autonomously** or **escalate to a human** — then computes blast
