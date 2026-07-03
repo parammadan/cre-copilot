@@ -191,6 +191,34 @@ async def remediate(req: Request) -> JSONResponse:
     return JSONResponse({"healed": healed})
 
 
+@app.post("/api/break")
+async def break_service(req: Request) -> JSONResponse:
+    """Inject a live failure into the chosen service (spike telemetry forward + a deploy +
+    an alert) so the agents then detect and fix it. Interactive: 'break X, watch them respond'."""
+    body = await req.json()
+    service = "".join(c for c in str(body.get("service", "")) if c.isalnum() or c in "-_")
+    if not service:
+        return JSONResponse({"error": "no service"}, status_code=400)
+    t0 = pd.Timestamp(kusto.query("Telemetry | summarize m=max(Timestamp)").iloc[0].m).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # spike the chosen service, continue everyone else (so none drop from the recent window)
+    kusto.command(
+        ".set-or-append Telemetry <| "
+        f"let t0=datetime({t0}); let broke=dynamic(['{service}']); "
+        "let base=Telemetry|where Timestamp between (t0-4h..t0-30m) and Metric in ('latency_ms','error_rate')|summarize b=avg(Value) by Service,Metric; "
+        "let recent=Telemetry|where Timestamp>t0-8m and Metric in ('latency_ms','error_rate')|summarize r=avg(Value) by Service,Metric; "
+        "let targets=base|join kind=inner recent on Service,Metric|extend target=iff(set_has_element(broke,Service), b*iff(Metric=='latency_ms',5.0,15.0), r); "
+        "range i from 1 to 12 step 1|extend d=1|join kind=inner (targets|extend d=1) on d"
+        "|extend Timestamp=t0+i*1m, Value=target*(1+(rand()-0.5)*0.08), Environment='prod'"
+        "|project Timestamp,Service,Metric,Value,Environment")
+    kusto.command(
+        f".set-or-append Deployments <| print Timestamp=datetime({t0})+4m, Service='{service}', "
+        "Version='v9.9.9', CommitId='demo0bad', Author='demo', Pipeline='azure-pipelines-ci', Environment='prod'")
+    kusto.command(
+        f".set-or-append Alerts <| print Timestamp=datetime({t0})+11m, AlertId='ALT-brk', Service='{service}', "
+        f"Metric='latency_ms', Severity='Sev2', Threshold=300.0, ObservedValue=640.0, Description='{service} p95 latency breached 300ms threshold'")
+    return JSONResponse({"broke": service})
+
+
 @app.post("/api/reset")
 def reset() -> JSONResponse:
     """Re-plant a fresh scenario, then return the new state."""

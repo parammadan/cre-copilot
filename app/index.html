@@ -44,6 +44,29 @@
   .trendbar{margin-bottom:16px;padding:12px 16px;border:1px solid rgba(250,178,25,.45);border-radius:10px;
     background:rgba(250,178,25,.09);display:flex;align-items:center;gap:10px;font-size:13px}
   .trendbar b{color:var(--warning)}
+  /* ---- mission-control glow-up ---- */
+  :root{ --neon:#38e1ff; }
+  body{ background:radial-gradient(1100px 520px at 75% -12%, rgba(56,225,255,.08), transparent 60%),
+        radial-gradient(900px 500px at 10% 110%, rgba(56,225,255,.05), transparent 55%), #06090f; }
+  .card{ background:linear-gradient(180deg, rgba(255,255,255,.02), rgba(255,255,255,0)), #0d1420;
+         border-color:rgba(120,180,255,.14); box-shadow:0 12px 36px rgba(0,0,0,.5), inset 0 0 0 1px rgba(56,225,255,.03); }
+  .card h2{ color:#9fd8ff; }
+  header .title{ background:linear-gradient(90deg,#ffffff,#7fe6ff); -webkit-background-clip:text;
+         background-clip:text; -webkit-text-fill-color:transparent; }
+  .btn{ background:linear-gradient(90deg,#1493cf,#38e1ff); color:#00131c;
+         box-shadow:0 0 22px rgba(56,225,255,.4); }
+  .btn.ghost{ background:transparent; color:#9fd8ff; border-color:rgba(56,225,255,.3); box-shadow:none; }
+  .chip-agent{ background:#0c1520; }
+  .chip-agent.active{ border-color:var(--neon); color:#eaffff;
+         box-shadow:0 0 0 1px rgba(56,225,255,.45), 0 0 20px rgba(56,225,255,.35); }
+  .chip-agent.active .d{ background:var(--neon); box-shadow:0 0 10px var(--neon); }
+  .chip-agent.done .d{ box-shadow:0 0 8px var(--good); }
+  .kpi .big{ text-shadow:0 0 24px rgba(56,225,255,.3); }
+  .dot{ box-shadow:0 0 12px var(--good); }
+  #topo circle{ filter:drop-shadow(0 0 5px rgba(120,200,255,.3)); }
+  .turn{ border-left-color:var(--neon); }
+  .turn .who{ color:#7fe6ff; }
+  .tooltag{ background:rgba(56,225,255,.14); color:#8fe8ff; }
   .dot{width:8px;height:8px;border-radius:50%;background:var(--good);display:inline-block;margin-right:6px;
     box-shadow:0 0 0 0 rgba(12,163,12,.6);animation:pulse 2s infinite}
   @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(12,163,12,.5)}70%{box-shadow:0 0 0 7px rgba(12,163,12,0)}100%{box-shadow:0 0 0 0 rgba(12,163,12,0)}}
@@ -134,7 +157,7 @@
     <div class="stack">
       <div class="card">
         <h2>Service topology &amp; blast radius</h2>
-        <div class="hint">Node color = current health · culprit pulses red · blast propagates along dependency edges</div>
+        <div class="hint">Node color = current health · <b style="color:var(--neon)">click any service to break it</b> and watch the agents respond live</div>
         <svg id="topo" viewBox="0 0 900 470" style="width:100%;height:auto"></svg>
         <div class="topo-legend">
           <span><i class="sw" style="background:var(--critical)"></i>culprit</span>
@@ -222,6 +245,7 @@ function renderTopo(){
       showTip(`<b>${svc}</b><br>status: ${st}<br>current latency: ${r.toFixed(2)}× baseline`+
         (inc?`<br>root cause of ${inc.alertService} incident`:""),ev.clientX,ev.clientY);});
     g.addEventListener("mouseleave",hideTip);
+    g.addEventListener("click",()=>breakService(svc));
     svg.appendChild(g);
   }
   let off=0; if(window._flowT)clearInterval(window._flowT);
@@ -418,6 +442,12 @@ async function approve(service, alertService, btn){
   await load();                        // topology re-colors: RED -> GREEN
   btn.textContent="✓ remediated"; btn.closest('.approval-card').classList.add('done');
   document.getElementById('statusText').textContent="healed · "+service+" rolled back, "+alertService+" recovered";
+}
+async function breakService(svc){
+  document.getElementById('statusText').textContent="💥 injecting failure into "+svc+"…";
+  await fetch('/api/break',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({service:svc})});
+  await load();          // topology reloads -> the service you clicked goes RED
+  runIncident();          // agents immediately detect + work it
 }
 document.getElementById('runBtn').addEventListener('click',runIncident);
 document.getElementById('resetBtn').addEventListener('click',async e=>{
