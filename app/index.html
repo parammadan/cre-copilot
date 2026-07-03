@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>CRE Copilot — Live Incident Console</title>
+<style>
+  :root{
+    --surface:#1a1a19; --surface-2:#212120; --page:#0d0d0d;
+    --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --baseline:#383835; --border:rgba(255,255,255,0.10);
+    --good:#0ca30c; --warning:#fab219; --serious:#ec835a; --critical:#d03b3b;
+    --blue:#3987e5; --aqua:#199e70;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--page);color:var(--ink);
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:14px;line-height:1.45}
+  a{color:var(--blue)}
+  .wrap{max-width:1320px;margin:0 auto;padding:20px}
+  header{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:14px}
+  header .title{font-size:20px;font-weight:650;letter-spacing:.2px}
+  header .sub{color:var(--muted);font-size:12.5px;margin-top:2px}
+  .btn{background:var(--blue);color:#fff;border:none;border-radius:8px;padding:9px 16px;
+    font-size:13.5px;font-weight:600;cursor:pointer;transition:filter .15s}
+  .btn:hover{filter:brightness(1.1)} .btn:disabled{opacity:.5;cursor:default}
+  .btn.ghost{background:transparent;border:1px solid var(--border);color:var(--ink2)}
+  /* agent conversation */
+  .agent-chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+  .chip-agent{display:flex;align-items:center;gap:7px;padding:6px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2);font-size:12.5px;font-weight:600;color:var(--muted);transition:all .2s}
+  .chip-agent .d{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+  .chip-agent.active{color:var(--ink);border-color:var(--blue);box-shadow:0 0 0 2px rgba(57,135,229,.25)}
+  .chip-agent.active .d{background:var(--blue);animation:pulse2 1s infinite}
+  .chip-agent.done{color:var(--ink2)} .chip-agent.done .d{background:var(--good)}
+  @keyframes pulse2{0%,100%{opacity:1}50%{opacity:.25}}
+  .transcript{max-height:440px;overflow-y:auto;display:flex;flex-direction:column;gap:14px;padding-right:6px}
+  .turn{border-left:2px solid var(--blue);padding:1px 0 1px 12px}
+  .turn .who{font-size:12px;font-weight:700;color:var(--blue);margin-bottom:4px}
+  .turn .tools{display:flex;gap:6px;flex-wrap:wrap;margin:2px 0}
+  .tooltag{font-size:10.5px;background:rgba(57,135,229,.15);color:var(--blue);padding:1px 7px;border-radius:999px;font-family:ui-monospace,monospace}
+  .turn .body{font-size:13px;color:var(--ink2);white-space:pre-wrap}
+  .approval-card{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:12px;padding:12px 14px;border:1px solid rgba(12,163,12,.4);border-radius:10px;background:rgba(12,163,12,.08)}
+  .approval-card.esc{border-color:rgba(250,178,25,.4);background:rgba(250,178,25,.07)}
+  .approval-card.done{border-color:var(--border);background:var(--surface-2)}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--good);display:inline-block;margin-right:6px;
+    box-shadow:0 0 0 0 rgba(12,163,12,.6);animation:pulse 2s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(12,163,12,.5)}70%{box-shadow:0 0 0 7px rgba(12,163,12,0)}100%{box-shadow:0 0 0 0 rgba(12,163,12,0)}}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px}
+  .card h2{margin:0 0 2px;font-size:13px;font-weight:650;letter-spacing:.3px;text-transform:uppercase;color:var(--ink2)}
+  .card .hint{color:var(--muted);font-size:12px;margin-bottom:10px}
+  .control{display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin-bottom:16px}
+  .control .slider-box{flex:1;min-width:280px}
+  .control label{font-size:12px;color:var(--ink2);display:flex;justify-content:space-between;margin-bottom:6px}
+  .control .thval{font-variant-numeric:tabular-nums;color:var(--ink);font-weight:650}
+  input[type=range]{width:100%;accent-color:var(--blue);height:4px}
+  .grid{display:grid;grid-template-columns:1.35fr 1fr;gap:16px}
+  @media(max-width:980px){.grid{grid-template-columns:1fr}}
+  .stack{display:flex;flex-direction:column;gap:16px}
+  .topo-legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--ink2)}
+  .topo-legend span{display:inline-flex;align-items:center;gap:6px}
+  .sw{width:10px;height:10px;border-radius:3px;display:inline-block}
+  .inc{border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:12px;background:var(--surface-2)}
+  .inc .row{display:flex;align-items:center;justify-content:space-between;gap:10px}
+  .chip{font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;letter-spacing:.4px}
+  .sev2{background:rgba(236,131,90,.18);color:var(--serious)}
+  .sev3{background:rgba(250,178,25,.16);color:var(--warning)}
+  .sev1{background:rgba(208,59,59,.18);color:var(--critical)}
+  .rootline{margin:8px 0 4px;font-size:13.5px}
+  .rootline b{color:var(--ink)}
+  .gate{display:inline-flex;align-items:center;gap:7px;font-weight:700;font-size:13px;padding:6px 12px;border-radius:8px;margin-top:6px}
+  .gate.auto{background:rgba(12,163,12,.15);color:var(--good);border:1px solid rgba(12,163,12,.4)}
+  .gate.esc{background:rgba(250,178,25,.14);color:var(--warning);border:1px solid rgba(250,178,25,.4)}
+  table.cand{width:100%;border-collapse:collapse;margin-top:10px;font-size:12px}
+  table.cand th{color:var(--muted);text-align:left;font-weight:600;padding:4px 6px;border-bottom:1px solid var(--grid)}
+  table.cand td{padding:4px 6px;border-bottom:1px solid var(--grid);font-variant-numeric:tabular-nums}
+  table.cand tr.top td{color:var(--ink);font-weight:600}
+  table.cand tr:not(.top) td{color:var(--ink2)}
+  .comms{margin-top:10px;background:#0f0f0e;border:1px solid var(--border);border-radius:8px;padding:10px;
+    font-size:12px;white-space:pre-wrap;color:var(--ink2);font-family:ui-monospace,Menlo,monospace}
+  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-top:16px}
+  @media(max-width:980px){.kpis{grid-template-columns:repeat(2,1fr)}}
+  .kpi .big{font-size:30px;font-weight:680;letter-spacing:-.5px}
+  .kpi .lbl{color:var(--muted);font-size:12px;margin-top:2px}
+  .kpi .delta{font-size:12px;margin-top:6px}
+  .up{color:var(--good)}
+  svg text{fill:var(--ink2)}
+  .tooltip{position:fixed;pointer-events:none;background:#000;border:1px solid var(--border);
+    border-radius:8px;padding:7px 10px;font-size:12px;color:var(--ink);opacity:0;transition:opacity .12s;z-index:50;max-width:240px}
+  .spark-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+  @media(max-width:980px){.spark-grid{grid-template-columns:repeat(2,1fr)}}
+  .spark .name{font-size:11.5px;color:var(--ink2);display:flex;justify-content:space-between;margin-bottom:2px}
+  .spark .name .v{font-variant-numeric:tabular-nums;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <div class="title">CRE Copilot <span style="color:var(--muted);font-weight:400">— Live Incident Console</span></div>
+      <div class="sub">Autonomous live-site incident response · detection → correlation → confidence gate · on Azure Data Explorer</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:14px">
+      <span class="sub"><span class="dot" id="statusDot"></span><span id="statusText">connecting…</span></span>
+      <button class="btn ghost" id="resetBtn">⟳ New data</button>
+      <button class="btn" id="runBtn">▶ Run incident response</button>
+    </div>
+  </header>
+
+  <div class="control card">
+    <div class="slider-box">
+      <label>
+        <span>Confidence gate — <b>autonomy threshold</b></span>
+        <span>act ≥ <span class="thval" id="thVal">0.70</span> · else escalate</span>
+      </label>
+      <input type="range" id="thresh" min="0.40" max="0.95" step="0.01" value="0.70"/>
+    </div>
+    <div class="sub" style="max-width:340px">Drag to change policy. Watch incidents flip between
+      <b style="color:var(--good)">🤖 auto-remediate</b> and <b style="color:var(--warning)">🧑 escalate</b> in real time.</div>
+  </div>
+
+  <div class="card" id="agentCard">
+    <h2>Multi-agent incident response — live</h2>
+    <div class="hint">Commander → Correlator → Impact → Gate stream their reasoning as they call your KQL + the deterministic gate. Numbers come from the tools, not the model.</div>
+    <div class="agent-chips" id="agentChips"></div>
+    <div class="transcript" id="transcript"><div class="sub">Click “Run incident response” — the agents work in front of you, live.</div></div>
+    <div id="approval"></div>
+  </div>
+
+  <div class="grid">
+    <div class="stack">
+      <div class="card">
+        <h2>Service topology &amp; blast radius</h2>
+        <div class="hint">Node color = current health · culprit pulses red · blast propagates along dependency edges</div>
+        <svg id="topo" viewBox="0 0 900 470" style="width:100%;height:auto"></svg>
+        <div class="topo-legend">
+          <span><i class="sw" style="background:var(--critical)"></i>culprit</span>
+          <span><i class="sw" style="background:var(--serious)"></i>degraded (blast radius)</span>
+          <span><i class="sw" style="background:var(--warning)"></i>elevated</span>
+          <span><i class="sw" style="background:var(--good)"></i>healthy</span>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Live telemetry — p95 latency (last 90 min)</h2>
+        <div class="hint">Detector reads these series; the spikes are what it flags.</div>
+        <div class="spark-grid" id="sparks"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Active incidents</h2>
+      <div class="hint">Each traced to a root cause with a confidence score; the gate decides act vs escalate.</div>
+      <div id="incidents"></div>
+    </div>
+  </div>
+
+  <div class="kpis">
+    <div class="card kpi"><div class="big" id="kTotal">–</div><div class="lbl">incidents (30 days)</div></div>
+    <div class="card kpi"><div class="big" id="kAuto">–</div><div class="lbl">auto-resolved by the gate</div>
+      <div class="delta up" id="kAutoRate"></div></div>
+    <div class="card kpi"><div class="big" id="kMttrAuto">–</div><div class="lbl">MTTR — autonomous</div>
+      <div class="delta up" id="kMttrDelta"></div></div>
+    <div class="card kpi"><div class="big" id="kMttrEsc">–</div><div class="lbl">MTTR — escalated to human</div></div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h2>Confidence distribution &amp; gate threshold</h2>
+    <div class="hint">Historical incidents by correlation confidence. The line is your current threshold —
+      everything right of it auto-resolves.</div>
+    <svg id="hist" viewBox="0 0 900 220" style="width:100%;height:auto;max-height:240px"></svg>
+  </div>
+</div>
+<div class="tooltip" id="tip"></div>
+
+<script>
+const NS="http://www.w3.org/2000/svg";
+const POS={ "payment-service":[150,80],"inventory":[150,235],"auth":[150,390],
+           "checkout-api":[470,235],"frontend":[790,235] };
+const STATUS={good:"var(--good)",warning:"var(--warning)",serious:"var(--serious)",critical:"var(--critical)"};
+let STATE=null;
+const tip=document.getElementById('tip');
+function showTip(html,x,y){tip.innerHTML=html;tip.style.left=(x+14)+'px';tip.style.top=(y+14)+'px';tip.style.opacity=1;}
+function hideTip(){tip.style.opacity=0;}
+function el(tag,attrs){const e=document.createElementNS(NS,tag);for(const k in attrs)e.setAttribute(k,attrs[k]);return e;}
+
+function scoreFor(svc){
+  let s=0; for(const a of STATE.anomalies){ if(a.Service===svc) s=Math.max(s,a.MaxScore);} return s;
+}
+function healthRatio(svc){ return (STATE.health && STATE.health[svc]!=null) ? STATE.health[svc] : 1.0; }
+function statusFor(svc){const r=healthRatio(svc);   // current health drives color (heals RED->GREEN)
+  if(r>=2.5)return"critical"; if(r>=1.6)return"serious"; if(r>=1.25)return"warning"; return"good";}
+
+function renderTopo(){
+  const svg=document.getElementById('topo'); svg.innerHTML="";
+  for(const e of STATE.edges){
+    const a=POS[e.from], b=POS[e.to]; if(!a||!b)continue;
+    const st=statusFor(e.from), active=healthRatio(e.from)>=1.25;
+    const mx=(a[0]+b[0])/2;
+    const d=`M ${a[0]} ${a[1]} C ${mx} ${a[1]}, ${mx} ${b[1]}, ${b[0]} ${b[1]}`;
+    svg.appendChild(el("path",{d,fill:"none",stroke:active?STATUS[st]:"var(--baseline)",
+      "stroke-width":active?3:1.5,opacity:active?0.9:0.5,
+      "stroke-dasharray":active?"7 6":"","class":active?"flow":""}));
+  }
+  for(const svc of STATE.services){
+    const p=POS[svc]; if(!p)continue; const st=statusFor(svc); const col=STATUS[st];
+    const g=el("g",{}); g.style.cursor="pointer";
+    if(st==="critical"){const halo=el("circle",{cx:p[0],cy:p[1],r:34,fill:"none",stroke:col,"stroke-width":2,opacity:.5});
+      halo.appendChild(el("animate",{attributeName:"r",values:"34;48;34",dur:"1.8s",repeatCount:"indefinite"}));
+      halo.appendChild(el("animate",{attributeName:"opacity",values:".55;0;.55",dur:"1.8s",repeatCount:"indefinite"}));
+      g.appendChild(halo);}
+    g.appendChild(el("circle",{cx:p[0],cy:p[1],r:32,fill:"var(--surface-2)",stroke:col,"stroke-width":3}));
+    g.appendChild(el("circle",{cx:p[0],cy:p[1],r:9,fill:col}));
+    const t=el("text",{x:p[0],y:p[1]+52,"text-anchor":"middle","font-size":"13.5","font-weight":"600"});
+    t.textContent=svc; t.setAttribute("fill","var(--ink)"); g.appendChild(t);
+    const r=healthRatio(svc);
+    const t2=el("text",{x:p[0],y:p[1]+68,"text-anchor":"middle","font-size":"11"});
+    t2.textContent=r>=1.25?(r.toFixed(1)+"× latency"):"healthy"; t2.setAttribute("fill","var(--muted)"); g.appendChild(t2);
+    g.addEventListener("mousemove",ev=>{const inc=STATE.incidents.find(i=>i.rootCause.service===svc);
+      showTip(`<b>${svc}</b><br>status: ${st}<br>current latency: ${r.toFixed(2)}× baseline`+
+        (inc?`<br>root cause of ${inc.alertService} incident`:""),ev.clientX,ev.clientY);});
+    g.addEventListener("mouseleave",hideTip);
+    svg.appendChild(g);
+  }
+  let off=0; if(window._flowT)clearInterval(window._flowT);
+  window._flowT=setInterval(()=>{off=(off-1)%13;document.querySelectorAll('#topo .flow').forEach(p=>p.setAttribute('stroke-dashoffset',off));},60);
+}
+
+function polar(cx,cy,r,deg){const a=(deg-180)*Math.PI/180;return[cx+r*Math.cos(a),cy+r*Math.sin(a)];}
+function arc(cx,cy,r,a0,a1){const[x0,y0]=polar(cx,cy,r,a0),[x1,y1]=polar(cx,cy,r,a1);
+  const large=(a1-a0)<=180?0:1;return`M ${x0} ${y0} A ${r} ${r} 0 ${large} 1 ${x1} ${y1}`;}
+function gauge(conf,threshold){
+  const w=150,h=88,cx=75,cy=78,r=58; const auto=conf>=threshold;
+  const col=auto?"var(--good)":"var(--warning)";
+  const s=el("svg",{viewBox:`0 0 ${w} ${h}`,width:w,height:h});
+  s.appendChild(el("path",{d:arc(cx,cy,r,0,180),fill:"none",stroke:"var(--grid)","stroke-width":9,"stroke-linecap":"round"}));
+  s.appendChild(el("path",{d:arc(cx,cy,r,0,180*conf),fill:"none",stroke:col,"stroke-width":9,"stroke-linecap":"round"}));
+  const[tx,ty]=polar(cx,cy,r+7,180*threshold),[tx2,ty2]=polar(cx,cy,r-11,180*threshold);
+  s.appendChild(el("line",{x1:tx,y1:ty,x2:tx2,y2:ty2,stroke:"var(--ink)","stroke-width":2}));
+  const val=el("text",{x:cx,y:cy-6,"text-anchor":"middle","font-size":"26","font-weight":"680"});
+  val.textContent=conf.toFixed(2); val.setAttribute("fill","var(--ink)"); s.appendChild(val);
+  const lab=el("text",{x:cx,y:cy+12,"text-anchor":"middle","font-size":"10"});
+  lab.textContent="confidence"; lab.setAttribute("fill","var(--muted)"); s.appendChild(lab);
+  return s;
+}
+
+function commsText(inc,auto){
+  const rc=inc.rootCause;
+  const deg=inc.impact.filter(x=>x.LatencyIncrease>=1.3).sort((a,b)=>b.LatencyIncrease-a.LatencyIncrease);
+  const impactLine=deg.length?`${deg.length} service(s) degraded — worst: ${deg[0].AffectedService} at ${deg[0].LatencyIncrease.toFixed(1)}x normal latency`:"no downstream services materially degraded";
+  const head=auto?"RESOLVED":"INVESTIGATING";
+  const act=auto?`Automated remediation applied: rollback ${rc.service} to previous release (culprit: ${rc.version}).`
+                :`Escalated to on-call: page on-call engineer with ranked candidates.`;
+  const nxt=auto?"Monitoring recovery; will confirm full resolution shortly.":"Awaiting human confirmation before remediating. Next update in 15 min.";
+  return `[${head}] ${inc.severity} — degraded performance on ${inc.alertService}\nRoot cause: ${rc.service} ${rc.version} (identified with ${Math.round(rc.confidence*100)}% confidence).\nImpact: ${impactLine}.\n${act}\n${nxt}`;
+}
+function renderIncidents(threshold){
+  const box=document.getElementById('incidents'); box.innerHTML="";
+  if(!STATE.incidents.length){box.innerHTML='<div class="sub">No active incidents — all services healthy. ✅</div>';return;}
+  for(const inc of STATE.incidents){
+    const auto=inc.rootCause.confidence>=threshold;
+    const sevClass=inc.severity.toLowerCase();
+    const d=document.createElement('div'); d.className="inc";
+    const cand=inc.candidates.map((c,i)=>`<tr class="${i===0?'top':''}"><td>${c.Service}</td><td>${c.Version}</td>
+      <td>${c.minsBefore}m</td><td>${(c.anomalyRatio).toFixed(1)}×</td><td>${c.confidence.toFixed(3)}</td></tr>`).join("");
+    d.innerHTML=`
+      <div class="row">
+        <div><span class="chip ${sevClass}">${inc.severity}</span>
+          <b style="margin-left:8px">${inc.alertService}</b>
+          <span class="sub"> · alert ${inc.alertTime}</span></div>
+      </div>
+      <div class="rootline">root cause → <b>${inc.rootCause.service} ${inc.rootCause.version}</b></div>
+      <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+        <div class="gaugeSlot"></div>
+        <div class="gateSlot"></div>
+      </div>
+      <table class="cand"><tr><th>candidate</th><th>ver</th><th>Δt</th><th>anomaly</th><th>conf</th></tr>${cand}</table>
+      <div class="comms">${commsText(inc,auto)}</div>`;
+    d.querySelector('.gaugeSlot').appendChild(gauge(inc.rootCause.confidence,threshold));
+    const g=document.createElement('div');
+    g.className="gate "+(auto?"auto":"esc");
+    g.innerHTML=auto?"🤖 AUTO-REMEDIATE":"🧑 ESCALATE TO HUMAN";
+    d.querySelector('.gateSlot').appendChild(g);
+    box.appendChild(d);
+  }
+}
+
+function renderSparks(){
+  const box=document.getElementById('sparks'); box.innerHTML="";
+  for(const svc of STATE.services){
+    const data=STATE.telemetry[svc]||[]; if(!data.length)continue;
+    const st=statusFor(svc), col=STATUS[st];
+    const w=200,h=54,pad=4; const vals=data.map(d=>d.v);
+    const mn=Math.min(...vals),mx=Math.max(...vals),rng=(mx-mn)||1;
+    const X=i=>pad+i*(w-2*pad)/(data.length-1), Y=v=>h-pad-(v-mn)/rng*(h-2*pad);
+    const pts=data.map((d,i)=>`${X(i)},${Y(d.v)}`).join(" ");
+    const wrap=document.createElement('div'); wrap.className="spark";
+    wrap.innerHTML=`<div class="name"><span>${svc}</span><span class="v">${vals[vals.length-1].toFixed(0)}ms</span></div>`;
+    const s=el("svg",{viewBox:`0 0 ${w} ${h}`,width:"100%",height:h});
+    s.appendChild(el("polyline",{points:pts,fill:"none",stroke:col,"stroke-width":2,"stroke-linejoin":"round"}));
+    s.addEventListener("mousemove",ev=>{const rb=s.getBoundingClientRect();const i=Math.round((ev.clientX-rb.left)/rb.width*(data.length-1));
+      const d=data[Math.max(0,Math.min(data.length-1,i))]; if(d)showTip(`<b>${svc}</b><br>${d.t} · ${d.v.toFixed(0)} ms`,ev.clientX,ev.clientY);});
+    s.addEventListener("mouseleave",hideTip);
+    wrap.appendChild(s); box.appendChild(wrap);
+  }
+}
+
+function renderHist(threshold){
+  const svg=document.getElementById('hist'); svg.innerHTML="";
+  const data=STATE.metrics.confidence; if(!data.length)return;
+  const W=900,H=220,L=40,R=20,T=16,B=34; const x0=0.4,x1=1.0;
+  const maxc=Math.max(...data.map(d=>d.count));
+  const X=b=>L+(b-x0)/(x1-x0)*(W-L-R), Y=c=>T+(1-c/maxc)*(H-T-B);
+  const bw=(W-L-R)/((x1-x0)/0.1)-6;
+  for(const d of data){
+    const auto=(d.bucket+0.05)>=threshold; const col=auto?"var(--good)":"var(--warning)";
+    const x=X(d.bucket)+3,y=Y(d.count);
+    const r=el("rect",{x,y,width:bw,height:H-B-y,rx:4,fill:col,opacity:.85});
+    r.addEventListener("mousemove",ev=>showTip(`conf ${d.bucket.toFixed(1)}–${(d.bucket+0.1).toFixed(1)}<br>${d.count} incidents · ${auto?'auto':'escalate'}`,ev.clientX,ev.clientY));
+    r.addEventListener("mouseleave",hideTip); svg.appendChild(r);
+    const tx=el("text",{x:x+bw/2,y:H-B+16,"text-anchor":"middle","font-size":"11"});tx.textContent=d.bucket.toFixed(1);svg.appendChild(tx);
+  }
+  const tx=X(threshold);
+  svg.appendChild(el("line",{x1:tx,y1:T-4,x2:tx,y2:H-B,stroke:"var(--ink)","stroke-width":2,"stroke-dasharray":"5 4"}));
+  const lb=el("text",{x:tx+6,y:T+6,"font-size":"11","font-weight":"600"});lb.textContent="threshold "+threshold.toFixed(2);lb.setAttribute("fill","var(--ink)");svg.appendChild(lb);
+  svg.appendChild(el("line",{x1:L,y1:H-B,x2:W-R,y2:H-B,stroke:"var(--baseline)","stroke-width":1}));
+}
+
+function renderMetrics(){
+  const m=STATE.metrics;
+  document.getElementById('kTotal').textContent=m.total;
+  document.getElementById('kAuto').textContent=m.autoResolved;
+  document.getElementById('kAutoRate').textContent=Math.round(100*m.autoResolved/m.total)+"% of incidents";
+  const ma=m.mttr['auto-resolved']||0, me=m.mttr['escalated']||0;
+  document.getElementById('kMttrAuto').textContent=ma+" min";
+  document.getElementById('kMttrEsc').textContent=me+" min";
+  document.getElementById('kMttrDelta').textContent=me?("▼ "+(me-ma)+" min vs human ("+(me/ma).toFixed(1)+"× faster)"):"";
+}
+
+function renderAll(){
+  const th=parseFloat(document.getElementById('thresh').value);
+  renderTopo(); renderSparks(); renderIncidents(th); renderMetrics(); renderHist(th);
+}
+document.getElementById('thresh').addEventListener('input',e=>{
+  document.getElementById('thVal').textContent=parseFloat(e.target.value).toFixed(2);
+  const th=parseFloat(e.target.value); renderIncidents(th); renderHist(th);
+});
+
+async function load(){
+  const r=await fetch('/api/state'); STATE=await r.json();
+  document.getElementById('statusDot').style.background="var(--good)";
+  document.getElementById('statusText').textContent="live · "+STATE.incidents.length+" active incident(s)";
+  renderChips(); renderAll();
+  if(new URLSearchParams(location.search).has('autorun')) setTimeout(runIncident, 700);
+}
+
+/* ---------- live agent conversation (SSE streaming) ---------- */
+const AGENTS=["Commander","Correlator","Impact","Gate"];
+function renderChips(){
+  document.getElementById('agentChips').innerHTML =
+    AGENTS.map(a=>`<div class="chip-agent" id="chip-${a}"><span class="d"></span>${a}</div>`).join('');
+}
+function setChip(a,s){ const el=document.getElementById('chip-'+a); if(el){el.classList.remove('active','done'); if(s)el.classList.add(s);} }
+function addTurn(agent){
+  const t=document.getElementById('transcript'); const d=document.createElement('div'); d.className='turn';
+  d.innerHTML=`<div class="who">${agent}</div><div class="tools"></div><div class="body"></div>`;
+  t.appendChild(d); return {body:d.querySelector('.body'), tools:d.querySelector('.tools')};
+}
+function runIncident(){
+  const btn=document.getElementById('runBtn'); btn.disabled=true; btn.textContent="▶ agents working…";
+  const t=document.getElementById('transcript'); t.innerHTML=""; AGENTS.forEach(a=>setChip(a,''));
+  const es=new EventSource('/api/incident/stream'); let cur=null;
+  es.onmessage=e=>{ const ev=JSON.parse(e.data);
+    if(ev.type==='agent_start'){ setChip(ev.agent,'active'); cur=addTurn(ev.agent); }
+    else if(ev.type==='token'&&cur){ cur.body.textContent+=ev.text; t.scrollTop=t.scrollHeight; }
+    else if(ev.type==='tool_call'&&cur){ const s=document.createElement('span'); s.className='tooltag'; s.textContent='⚙ '+ev.tool+'()'; cur.tools.appendChild(s); }
+    else if(ev.type==='agent_end'){ setChip(ev.agent,'done'); }
+    else if(ev.type==='error'&&cur){ cur.body.textContent+='\n[error] '+ev.message; }
+    else if(ev.type==='done'){ es.close(); btn.disabled=false; btn.textContent="▶ Run incident response"; load().then(showApproval); }
+  };
+  es.onerror=()=>{ es.close(); btn.disabled=false; btn.textContent="▶ Run incident response"; };
+}
+
+/* ---------- human-in-the-loop approval + cure loop ---------- */
+function showApproval(){
+  const th=parseFloat(document.getElementById('thresh').value);
+  const box=document.getElementById('approval'); box.innerHTML="";
+  for(const i of STATE.incidents){
+    const auto=i.rootCause.confidence>=th;
+    const d=document.createElement('div'); d.className='approval-card'+(auto?'':' esc');
+    if(auto){
+      d.innerHTML=`<div>🤖 <b>Proposed remediation</b> — rollback <b>${i.rootCause.service} ${i.rootCause.version}</b>
+        <span class="sub">confidence ${i.rootCause.confidence.toFixed(2)} ≥ ${th.toFixed(2)} · awaiting your approval</span></div>`;
+      const b=document.createElement('button'); b.className='btn'; b.textContent='✓ APPROVE & remediate';
+      b.onclick=()=>approve(i.rootCause.service, i.alertService, b);
+      d.appendChild(b);
+    } else {
+      d.innerHTML=`<div>🧑 <b>${i.rootCause.service} ${i.rootCause.version}</b> escalated to on-call
+        <span class="sub">confidence ${i.rootCause.confidence.toFixed(2)} < ${th.toFixed(2)} · no automatic action</span></div>`;
+    }
+    box.appendChild(d);
+  }
+}
+async function approve(service, alertService, btn){
+  btn.disabled=true; btn.textContent="⏳ rolling back…";
+  document.getElementById('statusText').textContent="remediating "+service+"…";
+  await fetch('/api/remediate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({service})});
+  await load();                        // topology re-colors: RED -> GREEN
+  btn.textContent="✓ remediated"; btn.closest('.approval-card').classList.add('done');
+  document.getElementById('statusText').textContent="healed · "+service+" rolled back, "+alertService+" recovered";
+}
+document.getElementById('runBtn').addEventListener('click',runIncident);
+document.getElementById('resetBtn').addEventListener('click',async e=>{
+  const b=e.target; b.disabled=true; b.textContent="⟳ planting…";
+  const r=await fetch('/api/reset',{method:'POST'}); STATE=await r.json();
+  b.disabled=false; b.textContent="⟳ New data"; renderChips(); renderAll();
+});
+load();
+</script>
+</body>
+</html>

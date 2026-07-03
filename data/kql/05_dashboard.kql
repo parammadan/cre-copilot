@@ -1,0 +1,40 @@
+// CRE Copilot — Phase 7: operational dashboard tiles (ADX Dashboards).
+// Each block below is one tile. Paste into a new dashboard at https://dataexplorer.azure.com
+// (Dashboards -> New -> add tile -> pick the CopilotDb data source -> paste query).
+
+// --- TILE 1: KPI row (stat tiles) -----------------------------------------
+Incidents
+| summarize Total = count(),
+            AutoResolved = countif(Status == 'auto-resolved'),
+            Escalated = countif(Status == 'escalated'),
+            AutoResolveRate = round(100.0 * countif(Status == 'auto-resolved') / count(), 0)
+
+// --- TILE 2: MTTR by outcome (bar) ----------------------------------------
+Incidents
+| where isnotempty(EndTime)
+| extend MTTR_min = datetime_diff('minute', EndTime, StartTime)
+| summarize AvgMTTR_min = round(avg(MTTR_min), 0) by Status
+
+// --- TILE 3: incidents over time (time chart) -----------------------------
+Incidents
+| summarize Incidents = count() by bin(StartTime, 1d)
+| order by StartTime asc
+
+// --- TILE 4: outcome split — auto vs human (pie) --------------------------
+Incidents
+| summarize Count = count() by Status
+
+// --- TILE 5: confidence distribution (column) -----------------------------
+Incidents
+| summarize Count = count() by ConfidenceBucket = bin(Confidence, 0.1)
+| order by ConfidenceBucket asc
+
+// --- TILE 6: incidents by service (bar) -----------------------------------
+Incidents
+| summarize Count = count() by Service
+| order by Count desc
+
+// --- TILE 7: recent incidents (table) -------------------------------------
+Incidents
+| top 12 by StartTime desc
+| project StartTime, Service, Severity, Status, ResolvedBy, Confidence, RootCause

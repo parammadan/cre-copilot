@@ -1,0 +1,23 @@
+// CRE Copilot — Phase 1: proactive TREND detection.
+// Fits a line to each service's recent latency and flags a consistent UPWARD slope,
+// with a 15-min projection — so we can catch a degradation before it breaches the
+// alert threshold. "A good SRE fixes it before it pages."
+
+.create-or-alter function with (docstring='Rising latency trend before a threshold breach (proactive)', folder='CRE')
+    DetectTrend(lookback:timespan = 45m, minSlopePerMin:real = 1.5, alertThreshold:real = 300.0) {
+    let tmax = toscalar(Telemetry | summarize max(Timestamp));
+    Telemetry
+    | where Timestamp > tmax - lookback and Metric == 'latency_ms'
+    | make-series v = avg(Value) on Timestamp from tmax - lookback to tmax step 1m by Service
+    | extend (rsq, slope, variance, interc, linefit) = series_fit_line(v)
+    | extend current = todouble(v[array_length(v) - 1])                // latest observed level
+    | extend projected15m = current + slope * 15.0
+    | where slope > minSlopePerMin and rsq > 0.5                       // consistent, not noisy, rise
+    | project Service,
+              slopePerMin  = round(slope, 2),
+              current      = round(current, 0),
+              projected15m = round(projected15m, 0),
+              willBreach   = projected15m > alertThreshold,
+              fitQuality   = round(rsq, 2)
+    | order by slopePerMin desc
+}

@@ -1,0 +1,14 @@
+# Python
+data/.venv/
+**/__pycache__/
+*.pyc
+
+# secrets / local config
+.env
+data/.env
+*.local.settings.json
+
+# artifacts
+dashboard/*.pbix
+.DS_Store
+/tmp/

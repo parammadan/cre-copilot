@@ -1,0 +1,30 @@
+// CRE Copilot — Phase 3: the Detector.
+// Reads raw telemetry, builds a time series per service+metric, and uses ADX's
+// series_decompose_anomalies to flag points that deviate from the fitted baseline.
+// Output = the anomalous (service, metric) signals that should raise incidents —
+// no hand-authored thresholds, the model learns each series' own normal.
+
+.create-or-alter function with (docstring='Detect anomalous service metrics from raw telemetry', folder='CRE')
+    Detect(lookback:timespan = 4h, threshold:real = 1.5) {
+    // Anchor to the latest telemetry, not wall-clock now() (data may be minutes/hours old).
+    let tmax = toscalar(Telemetry | summarize max(Timestamp));
+    Telemetry
+    | where Timestamp > tmax - lookback
+    | where Metric in ('latency_ms', 'error_rate')
+    | make-series val = avg(Value) on Timestamp from tmax - lookback to tmax step 1m by Service, Metric
+    // Learn the baseline from clean history only (exclude the last 40 pts via test_points)
+    // so a big spike can't mask itself; 'linefit' trend absorbs the gentle diurnal drift,
+    // so seasonality/jitter doesn't read as anomalous.
+    | extend (anom, ascore, abase) = series_decompose_anomalies(val, threshold, 0, 'linefit', 40)
+    | mv-expand Timestamp to typeof(datetime), val to typeof(real),
+                anom to typeof(long), ascore to typeof(real), abase to typeof(real)
+    | where anom == 1 and Timestamp > tmax - 45m   // current positive anomalies only
+    | summarize AnomalyPoints = count(),
+                PeakValue    = round(max(val), 1),
+                Baseline     = round(avg(abase), 1),
+                MaxScore     = round(max(abs(ascore)), 2),
+                FirstSeen    = min(Timestamp)
+        by Service, Metric
+    | where AnomalyPoints >= 5   // SUSTAINED (>=5 min), so 1-2 min transient blips are rejected
+    | order by MaxScore desc
+}

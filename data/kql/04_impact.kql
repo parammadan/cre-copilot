@@ -1,0 +1,30 @@
+// CRE Copilot — Phase 5: the Impact agent (blast radius).
+// Given a root-cause service, walk the dependency graph DOWNSTREAM to find every
+// service that leans on it, and quantify how degraded each one is right now.
+
+.create-or-alter function with (docstring='Blast radius: downstream services affected by a root cause', folder='CRE')
+    ImpactAssessment(rootService:string) {
+    let tmax = toscalar(Telemetry | summarize max(Timestamp));
+    // Downstream dependents (who depends on the culprit), up to 3 hops out.
+    let hop1 = ServiceDependencies | where DependsOn == rootService | project Service;
+    let hop2 = ServiceDependencies | where DependsOn in (hop1) | project Service;
+    let hop3 = ServiceDependencies | where DependsOn in (hop2) | project Service;
+    let affected = union hop1, hop2, hop3 | distinct Service;
+    // Current vs baseline latency for each affected service.
+    let recent = Telemetry
+        | where Timestamp > tmax - 30m and Metric == 'latency_ms'
+        | summarize obs = avg(Value) by Service;
+    let base = Telemetry
+        | where Timestamp between (tmax - 4h .. tmax - 30m) and Metric == 'latency_ms'
+        | summarize b = avg(Value) by Service;
+    affected
+    | join kind=inner recent on Service
+    | join kind=inner base on Service
+    | extend LatencyIncrease = round(obs / b, 2)
+    | extend Degraded = LatencyIncrease >= 1.3
+    | project AffectedService = Service,
+              CurrentLatencyMs = round(obs, 0),
+              BaselineMs = round(b, 0),
+              LatencyIncrease
+    | order by LatencyIncrease desc
+}

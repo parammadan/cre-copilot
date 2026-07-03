@@ -1,0 +1,47 @@
+// CRE Copilot — Phase 2: the Correlator.
+// Given an alert (service + time), rank candidate root-cause deploys by combining
+// three signals into a confidence score:
+//   proximity  — how close the deploy is to the alert (exponential time decay)
+//   anomaly    — how abnormal that service's metrics are vs its own baseline
+//   dependency — is the deployed service the alerting service, or upstream of it?
+// The winner is the most likely root cause; its confidence feeds the act-vs-escalate gate.
+
+.create-or-alter function with (docstring='Rank root-cause candidates for an alert', folder='CRE')
+    Correlate(alertService:string, alertTime:datetime) {
+    let lookback = 30m;
+    let winStart = alertTime - lookback;
+    let baseWin = 4h;
+    // Each service/metric's healthy baseline (the 4h BEFORE the incident window).
+    let baseline = Telemetry
+        | where Timestamp < winStart and Timestamp >= winStart - baseWin
+        | summarize base = avg(Value) by Service, Metric;
+    // What each service/metric actually did during the incident window.
+    let observed = Telemetry
+        | where Timestamp between (winStart .. alertTime)
+        | summarize obs = avg(Value) by Service, Metric;
+    // Per-service anomaly = worst latency/error blow-up vs baseline.
+    let anomalies = observed
+        | join kind=inner baseline on Service, Metric
+        | where Metric in ('latency_ms', 'error_rate')
+        | extend ratio = obs / base
+        | summarize anomalyRatio = max(ratio) by Service;
+    // Services upstream of the alerting service (a problem there cascades down).
+    let upstreamSet = toscalar(
+        ServiceDependencies | where Service == alertService | summarize make_set(DependsOn));
+    Deployments
+    | where Timestamp between (winStart .. alertTime)
+    | extend minsBefore = datetime_diff('minute', alertTime, Timestamp)
+    | extend proximity = exp(-todouble(minsBefore) / 15.0)
+    | join kind=leftouter anomalies on Service
+    | extend anomalyRatio = coalesce(anomalyRatio, 1.0)
+    | extend isAlertSvc = Service == alertService
+    | extend isUpstream = set_has_element(upstreamSet, Service)
+    | extend depScore = case(isAlertSvc, 1.0, isUpstream, 0.8, 0.2)
+    // Only credit a deploy's anomaly if it's on the dependency path to the alert —
+    // stops an unrelated service's big spike from "attracting blame" for this alert.
+    | extend anomalyNorm = min_of(anomalyRatio / 5.0, 1.0) * iff(isAlertSvc or isUpstream, 1.0, 0.25)
+    | extend confidence = round(0.40 * proximity + 0.40 * anomalyNorm + 0.20 * depScore, 3)
+    | project Timestamp, Service, Version, Author, minsBefore,
+              anomalyRatio = round(anomalyRatio, 2), depScore, confidence
+    | order by confidence desc
+}

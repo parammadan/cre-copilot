@@ -1,0 +1,11 @@
+azure-kusto-data>=4.5.1
+azure-kusto-ingest>=4.5.1
+azure-identity>=1.16.0
+numpy>=1.26
+pandas>=2.0
+python-dotenv>=1.0
+pytest>=8.0
+fastapi>=0.115
+uvicorn[standard]>=0.30
+semantic-kernel>=1.30
+openai>=1.60

@@ -1,0 +1,54 @@
+// CRE Copilot — Phase 1 table schemas
+// Run once against the CopilotDb database (the generator script does this for you,
+// but you can also paste these into the ADX web UI query pane).
+
+// Raw time-series metrics for every service (latency_ms, error_rate, cpu_pct, req_per_sec).
+.create-merge table Telemetry (
+    Timestamp:   datetime,
+    Service:     string,
+    Metric:      string,
+    Value:       real,
+    Environment: string
+)
+
+// Deployment events — the key correlation signal. Most are innocent; one is the culprit.
+.create-merge table Deployments (
+    Timestamp:   datetime,
+    Service:     string,
+    Version:     string,
+    CommitId:    string,
+    Author:      string,
+    Pipeline:    string,
+    Environment: string
+)
+
+// Fired alerts (threshold breaches). The Detector also writes here.
+.create-merge table Alerts (
+    Timestamp:     datetime,
+    AlertId:       string,
+    Service:       string,
+    Metric:        string,
+    Severity:      string,
+    Threshold:     real,
+    ObservedValue: real,
+    Description:   string
+)
+
+// Incident records — history for MTTR/dashboards + rows the orchestrator writes at runtime.
+.create-merge table Incidents (
+    IncidentId:   string,
+    StartTime:    datetime,
+    EndTime:      datetime,
+    Service:      string,
+    Severity:     string,
+    RootCause:    string,
+    Status:       string,
+    ResolvedBy:   string,   // "auto" (agent) or a human handle — the confidence-gate outcome
+    Confidence:   real
+)
+
+// Service topology: "Service DependsOn <upstream>". Lets the Correlator reason about cascades.
+.create-merge table ServiceDependencies (
+    Service:   string,
+    DependsOn: string
+)
