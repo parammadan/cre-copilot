@@ -74,6 +74,49 @@
   .knob select{ width:100%; background:#0c1520; color:var(--ink); border:1px solid var(--border); border-radius:8px; padding:8px; }
   .knob.btns{ display:flex; flex-wrap:wrap; gap:8px; }
   .knob.btns .btn{ padding:7px 10px; font-size:12px; }
+
+  /* ================= PREMIUM RESTYLE: glassmorphism + neon purple/blue ================= */
+  :root{ --neon:#8b5cf6; --neon2:#38bdf8; }
+  body{
+    background:
+      radial-gradient(1200px 640px at 78% -12%, rgba(139,92,246,.18), transparent 60%),
+      radial-gradient(1000px 560px at 6% 110%, rgba(56,189,248,.12), transparent 55%),
+      #070510;
+    color:#eef0ff;
+  }
+  .wrap{ max-width:1360px; padding:26px; }
+  header .title{ font-size:22px; letter-spacing:.3px;
+    background:linear-gradient(90deg,#ffffff,#c4b5fd 55%,#7dd3fc);
+    -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
+  header .sub, .card .hint{ color:#8b93c7; }
+  .card{
+    background:linear-gradient(180deg, rgba(255,255,255,.055), rgba(255,255,255,.02));
+    backdrop-filter:blur(16px) saturate(140%); -webkit-backdrop-filter:blur(16px) saturate(140%);
+    border:1px solid rgba(167,139,250,.20); border-radius:16px; padding:18px;
+    box-shadow:0 18px 50px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.06);
+  }
+  .card h2{ color:#c4b5fd; letter-spacing:.7px; }
+  .btn{ background:linear-gradient(90deg,#7c3aed,#38bdf8); color:#fff; border-radius:10px;
+    box-shadow:0 0 24px rgba(139,92,246,.5); font-weight:650; }
+  .btn.ghost{ background:rgba(255,255,255,.05); color:#c4b5fd; border:1px solid rgba(167,139,250,.3); box-shadow:none; }
+  input[type=range]{ accent-color:var(--neon); }
+  .chip-agent{ background:rgba(255,255,255,.035); border:1px solid rgba(167,139,250,.18); border-radius:10px; }
+  .chip-agent.active{ border-color:var(--neon); color:#fff;
+    box-shadow:0 0 0 1px rgba(139,92,246,.5), 0 0 26px rgba(139,92,246,.45); }
+  .chip-agent.active .d{ background:var(--neon); box-shadow:0 0 12px var(--neon); }
+  .chip-agent.done .d{ background:#34d399; box-shadow:0 0 10px #34d399; }
+  .kpi .big{ font-size:34px; background:linear-gradient(90deg,#ffffff,#c4b5fd);
+    -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
+    filter:drop-shadow(0 0 20px rgba(139,92,246,.35)); }
+  .turn{ border-left:2px solid var(--neon); } .turn .who{ color:#c4b5fd; }
+  .tooltag{ background:rgba(139,92,246,.16); color:#c4b5fd; border:1px solid rgba(139,92,246,.3); }
+  .cf{ margin-top:10px; font-size:12px; color:#a5b4fc; background:rgba(139,92,246,.09);
+    border:1px dashed rgba(167,139,250,.4); border-radius:8px; padding:8px 10px; }
+  .grid{ gap:18px; } .kpis{ gap:18px; }
+  /* glowing, breathing topology nodes */
+  @keyframes nodeGlow{ 0%,100%{ filter:drop-shadow(0 0 5px rgba(167,139,250,.45)); } 50%{ filter:drop-shadow(0 0 13px rgba(167,139,250,.8)); } }
+  #topo circle{ animation:nodeGlow 3.2s ease-in-out infinite; }
+  .tooltip{ background:rgba(10,8,20,.95); border:1px solid rgba(167,139,250,.4); }
   .dot{width:8px;height:8px;border-radius:50%;background:var(--good);display:inline-block;margin-right:6px;
     box-shadow:0 0 0 0 rgba(12,163,12,.6);animation:pulse 2s infinite}
   @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(12,163,12,.5)}70%{box-shadow:0 0 0 7px rgba(12,163,12,0)}100%{box-shadow:0 0 0 0 rgba(12,163,12,0)}}
@@ -334,6 +377,7 @@ function renderIncidents(threshold){
         <div class="gateSlot"></div>
       </div>
       <table class="cand"><tr><th>candidate</th><th>ver</th><th>Δt</th><th>anomaly</th><th>conf</th></tr>${cand}</table>
+      <div class="cf">↪ <b>decision boundary:</b> ${auto?'would ESCALATE if anomaly ratio fell below':'would AUTO-REMEDIATE if anomaly ratio rose above'} <b>${(inc.candidates[0]||{}).flipAnomalyRatio}×</b> (now ${(inc.candidates[0]||{}).anomalyRatio}×)</div>
       <div class="comms">${commsText(inc,auto)}</div>`;
     d.querySelector('.gaugeSlot').appendChild(gauge(inc.rootCause.confidence,threshold));
     const g=document.createElement('div');

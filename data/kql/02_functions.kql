@@ -39,9 +39,13 @@
     | extend depScore = case(isAlertSvc, 1.0, isUpstream, 0.8, 0.2)
     // Only credit a deploy's anomaly if it's on the dependency path to the alert —
     // stops an unrelated service's big spike from "attracting blame" for this alert.
-    | extend anomalyNorm = min_of(anomalyRatio / 5.0, 1.0) * iff(isAlertSvc or isUpstream, 1.0, 0.25)
+    | extend relevance = iff(isAlertSvc or isUpstream, 1.0, 0.25)
+    | extend anomalyNorm = min_of(anomalyRatio / 5.0, 1.0) * relevance
     | extend confidence = round(0.40 * proximity + 0.40 * anomalyNorm + 0.20 * depScore, 3)
+    // COUNTERFACTUAL: the anomaly ratio at which confidence would hit the 0.70 gate —
+    // i.e. "if the anomaly fell below this, the decision flips to escalate". Deterministic.
+    | extend flipAnomalyRatio = round(((0.70 - 0.40 * proximity - 0.20 * depScore) / 0.40) / relevance * 5.0, 1)
     | project Timestamp, Service, Version, Author, minsBefore,
-              anomalyRatio = round(anomalyRatio, 2), depScore, confidence
+              anomalyRatio = round(anomalyRatio, 2), depScore, confidence, flipAnomalyRatio
     | order by confidence desc
 }
