@@ -322,6 +322,22 @@ async def break_service(req: Request) -> JSONResponse:
     return JSONResponse({"broke": service})
 
 
+@app.post("/api/ask")
+async def ask_copilot(req: Request) -> JSONResponse:
+    """Ask CRE Copilot — a conversational agent with all tools, answering on live data."""
+    from fastapi.concurrency import run_in_threadpool
+    from agents.assistants import ask
+    body = await req.json()
+    q = str(body.get("question", "")).strip()
+    if not q:
+        return JSONResponse({"error": "empty question"}, status_code=400)
+    try:
+        answer, tid = await run_in_threadpool(ask, q, body.get("thread_id"))
+        return JSONResponse({"answer": answer, "thread_id": tid})
+    except Exception as e:
+        return JSONResponse({"answer": "Copilot hit an error: " + str(e)[:160], "thread_id": body.get("thread_id")})
+
+
 @app.post("/api/reset")
 def reset() -> JSONResponse:
     """Re-plant a fresh scenario, then return the new state."""

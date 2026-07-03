@@ -152,6 +152,21 @@
   .tooltip{ background:#1a1e28; border:1px solid rgba(255,255,255,.12); }
   .comms{ background:#0f1219; border:1px solid rgba(255,255,255,.06); }
   .knob select{ background:#1a1e28; }
+  /* Ask CRE Copilot chat */
+  .copilot{ position:fixed; right:24px; bottom:24px; width:390px; max-height:72vh; display:flex; flex-direction:column;
+    background:#14171f; border:1px solid rgba(255,255,255,.12); border-radius:14px;
+    box-shadow:0 24px 70px rgba(0,0,0,.6); z-index:100; overflow:hidden; }
+  .copilot.hidden{ display:none; }
+  .cp-head{ padding:13px 15px; font-weight:600; color:#f4f5f8; display:flex; justify-content:space-between;
+    align-items:center; border-bottom:1px solid rgba(255,255,255,.08); background:linear-gradient(90deg,#6366f1,#818cf8); }
+  .cp-head span{ cursor:pointer; opacity:.85; }
+  .cp-msgs{ flex:1; overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:10px; }
+  .cp-hint{ color:#868da0; font-size:12.5px; line-height:1.5; }
+  .cp-msg{ font-size:13px; line-height:1.5; padding:9px 12px; border-radius:10px; max-width:92%; white-space:pre-wrap; }
+  .cp-msg.u{ align-self:flex-end; background:#6366f1; color:#fff; }
+  .cp-msg.a{ align-self:flex-start; background:#1a1e28; color:#e6e8ee; border:1px solid rgba(255,255,255,.08); }
+  .cp-input{ display:flex; gap:8px; padding:12px; border-top:1px solid rgba(255,255,255,.08); }
+  .cp-input input{ flex:1; background:#0f1219; border:1px solid rgba(255,255,255,.12); border-radius:8px; padding:10px 12px; color:#e6e8ee; }
   .dot{width:8px;height:8px;border-radius:50%;background:var(--good);display:inline-block;margin-right:6px;
     box-shadow:0 0 0 0 rgba(12,163,12,.6);animation:pulse 2s infinite}
   @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(12,163,12,.5)}70%{box-shadow:0 0 0 7px rgba(12,163,12,0)}100%{box-shadow:0 0 0 0 rgba(12,163,12,0)}}
@@ -211,6 +226,7 @@
     </div>
     <div style="display:flex;align-items:center;gap:14px">
       <span class="sub"><span class="dot" id="statusDot"></span><span id="statusText">connecting…</span></span>
+      <button class="btn" id="askBtn">💬 Ask CRE Copilot</button>
       <button class="btn ghost" id="resetBtn">⟳ New data</button>
       <button class="btn ghost" id="simBtn">🎮 Simulate</button>
       <button class="btn" id="runBtn">▶ Run incident response</button>
@@ -308,6 +324,17 @@
   </div>
 </div>
 <div class="tooltip" id="tip"></div>
+
+<div id="copilot" class="copilot hidden">
+  <div class="cp-head">💬 CRE Copilot <span id="cpClose">✕</span></div>
+  <div class="cp-msgs" id="cpMsgs">
+    <div class="cp-hint">Ask about the live incident — e.g. “what's the root cause?”, “should I roll back checkout-api?”, “any rising trends?”, “is there a runbook for payment-service?”</div>
+  </div>
+  <div class="cp-input">
+    <input id="cpInput" placeholder="Ask CRE Copilot…" autocomplete="off"/>
+    <button class="btn" id="cpSend">Send</button>
+  </div>
+</div>
 
 <script>
 const NS="http://www.w3.org/2000/svg";
@@ -573,6 +600,23 @@ document.getElementById('badDeployBtn').addEventListener('click',()=>simPost('/a
 document.getElementById('injErrBtn').addEventListener('click',()=>simPost('/api/sim/errors',{service:document.getElementById('simsvc').value,value:8},'errors → '+document.getElementById('simsvc').value));
 document.getElementById('killBtn').addEventListener('click',()=>simPost('/api/sim/kill',{service:document.getElementById('simsvc').value},'kill → '+document.getElementById('simsvc').value));
 document.getElementById('sandReset').addEventListener('click',()=>simPost('/api/sim/reset',{},'reset sandbox'));
+
+/* ---------- Ask CRE Copilot ---------- */
+let CP_THREAD=null;
+function cpToggle(){ const c=document.getElementById('copilot'); c.classList.toggle('hidden'); if(!c.classList.contains('hidden')) document.getElementById('cpInput').focus(); }
+function cpAdd(role,text){ const m=document.getElementById('cpMsgs'); const d=document.createElement('div'); d.className='cp-msg '+role; d.textContent=text; m.appendChild(d); m.scrollTop=m.scrollHeight; return d; }
+async function cpSend(){
+  const inp=document.getElementById('cpInput'); const q=inp.value.trim(); if(!q) return;
+  inp.value=''; cpAdd('u',q); const think=cpAdd('a','…thinking'); think.style.opacity=.6;
+  try{
+    const r=await fetch('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q, thread_id:CP_THREAD})});
+    const d=await r.json(); CP_THREAD=d.thread_id||CP_THREAD; think.style.opacity=1; think.textContent=d.answer||'(no answer)';
+  }catch(e){ think.textContent='error: '+e; }
+}
+document.getElementById('askBtn').addEventListener('click',cpToggle);
+document.getElementById('cpClose').addEventListener('click',cpToggle);
+document.getElementById('cpSend').addEventListener('click',cpSend);
+document.getElementById('cpInput').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); cpSend(); }});
 
 /* ---------- human-in-the-loop approval + cure loop ---------- */
 function showApproval(){

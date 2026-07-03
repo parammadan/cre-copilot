@@ -164,6 +164,44 @@ def _run_agent(thread_id, assistant_id):
     return run
 
 
+_COPILOT_ID = None
+
+
+def _copilot():
+    """A single conversational assistant with ALL tools — powers 'Ask CRE Copilot'."""
+    global _COPILOT_ID
+    if _COPILOT_ID:
+        return _COPILOT_ID
+    tools = [TOOLDEFS[t] for t in ("detect", "get_alerts", "detect_trend", "correlate",
+                                   "assess_impact", "apply_gate", "match_runbook", "write_runbook")]
+    instr = ("You are CRE Copilot, an SRE assistant for the live incident console. Answer questions about "
+             "the CURRENT live-site state using your tools — anomalies (detect), alerts (get_alerts), "
+             "rising trends (detect_trend), root cause + confidence (correlate), blast radius (assess_impact), "
+             "the act-vs-escalate decision (apply_gate), and runbooks (match_runbook). Use ONLY numbers the "
+             "tools return; never invent them. Be concise and concrete (a few sentences). If asked whether to "
+             "act, explain what the deterministic gate would decide and why.")
+    existing = {a.name: a for a in client.beta.assistants.list(limit=100).data if a.name == "CRE-Copilot"}
+    if "CRE-Copilot" in existing:
+        a = client.beta.assistants.update(existing["CRE-Copilot"].id, model=MODEL, instructions=instr, tools=tools)
+    else:
+        a = client.beta.assistants.create(model=MODEL, name="CRE-Copilot", instructions=instr, tools=tools)
+    _COPILOT_ID = a.id
+    return _COPILOT_ID
+
+
+def ask(question: str, thread_id: str | None = None):
+    """One-shot (thread-preserving) Q&A for the Copilot chat. Returns (answer, thread_id)."""
+    aid = _copilot()
+    if not thread_id:
+        thread_id = client.beta.threads.create().id
+    client.beta.threads.messages.create(thread_id=thread_id, role="user", content=question[:1000])
+    obs.log("copilot.ask", question=question[:120])
+    _run_agent(thread_id, aid)
+    msg = client.beta.threads.messages.list(thread_id=thread_id, order="desc", limit=1).data[0]
+    answer = msg.content[0].text.value if msg.content else "(no answer)"
+    return answer, thread_id
+
+
 def run():
     agents = _ensure_assistants()
     thread = client.beta.threads.create()
