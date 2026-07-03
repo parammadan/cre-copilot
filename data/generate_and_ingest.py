@@ -148,7 +148,7 @@ def create_schema(client: KustoClient) -> None:
         client.execute_mgmt(DATABASE, cmd)
     print(f"✓ {len(cmds)} tables created")
     # Clear data so re-running this script is idempotent (no duplicate rows).
-    for t in ["Telemetry", "Deployments", "Alerts", "Incidents", "ServiceDependencies"]:
+    for t in ["Telemetry", "Deployments", "Alerts", "Incidents", "ServiceDependencies", "Runbooks"]:
         client.execute_mgmt(DATABASE, f".clear table {t} data")
     print("✓ tables cleared for clean reload")
     # Make queued ingestion flush fast so the demo shows data in seconds, not minutes.
@@ -235,6 +235,17 @@ def build_dependencies() -> pd.DataFrame:
     return pd.DataFrame(SERVICE_DEPS, columns=["Service", "DependsOn"])
 
 
+def build_runbooks() -> pd.DataFrame:
+    # Seed ONE premade runbook (payment-service) so classic incidents MATCH; other
+    # services have none -> the Runbook agent authors + stores one on resolution.
+    rows = [("RB-1001", "payment-service:bad_deploy", "payment-service", "bad_deploy",
+             "1) Roll back payment-service to the previous release. "
+             "2) Verify checkout-api p95 latency returns < 300ms. 3) Confirm error rate < 1%.",
+             "seed", NOW - timedelta(days=20), 3)]
+    return pd.DataFrame(rows, columns=["RunbookId", "Signature", "Service", "FailureType",
+                                       "Steps", "CreatedBy", "CreatedAt", "TimesUsed"])
+
+
 ALERT_COLS = ["Timestamp", "AlertId", "Service", "Metric", "Severity",
               "Threshold", "ObservedValue", "Description"]
 
@@ -283,6 +294,7 @@ def main() -> None:
     ingest(ic, build_alerts(), "Alerts")
     ingest(ic, build_incident_history(), "Incidents")
     ingest(ic, build_dependencies(), "ServiceDependencies")
+    ingest(ic, build_runbooks(), "Runbooks")
     print("\nAll queued. Data lands in ~20-40s (fast batching policy). "
           "Verify with:  Telemetry | count")
 

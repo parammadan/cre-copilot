@@ -117,6 +117,41 @@
   @keyframes nodeGlow{ 0%,100%{ filter:drop-shadow(0 0 5px rgba(167,139,250,.45)); } 50%{ filter:drop-shadow(0 0 13px rgba(167,139,250,.8)); } }
   #topo circle{ animation:nodeGlow 3.2s ease-in-out infinite; }
   .tooltip{ background:rgba(10,8,20,.95); border:1px solid rgba(167,139,250,.4); }
+
+  /* ============ PROFESSIONAL SRE THEME (incident.io / ciroos style) — overrides the neon ============ */
+  :root{ --neon:#6366f1; --neon2:#818cf8; }
+  body{ background:#0b0d13; color:#e6e8ee;
+        font-family:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif; }
+  .wrap{ max-width:1340px; padding:30px; }
+  header{ margin-bottom:22px; }
+  header .title{ font-size:19px; font-weight:600; letter-spacing:-.2px;
+        background:none; -webkit-text-fill-color:#f4f5f8; color:#f4f5f8; }
+  header .sub, .card .hint{ color:#868da0; }
+  .card{ background:#14171f; backdrop-filter:none; -webkit-backdrop-filter:none;
+        border:1px solid rgba(255,255,255,.07); border-radius:12px; padding:20px;
+        box-shadow:0 1px 2px rgba(0,0,0,.35); }
+  .card h2{ color:#9aa2b4; letter-spacing:.5px; font-size:11.5px; font-weight:600; text-transform:uppercase; }
+  .btn{ background:#6366f1; color:#fff; border-radius:8px; box-shadow:none; font-weight:550; padding:9px 15px; }
+  .btn:hover{ filter:brightness(1.08); }
+  .btn.ghost{ background:#1a1e28; color:#cdd2de; border:1px solid rgba(255,255,255,.10); box-shadow:none; }
+  input[type=range]{ accent-color:#6366f1; }
+  .chip-agent{ background:#1a1e28; border:1px solid rgba(255,255,255,.08); border-radius:8px; color:#868da0; }
+  .chip-agent.active{ border-color:#6366f1; color:#f4f5f8; box-shadow:0 0 0 1px rgba(99,102,241,.35); }
+  .chip-agent.active .d{ background:#6366f1; box-shadow:none; }
+  .chip-agent.done{ color:#cdd2de; } .chip-agent.done .d{ background:#22c55e; box-shadow:none; }
+  .kpi .big{ font-size:30px; font-weight:650; letter-spacing:-.5px; color:#f4f5f8;
+        background:none; -webkit-text-fill-color:#f4f5f8; filter:none; }
+  .up{ color:#22c55e; }
+  .turn{ border-left:2px solid #6366f1; } .turn .who{ color:#818cf8; }
+  .tooltag{ background:rgba(99,102,241,.12); color:#aab2f7; border:1px solid rgba(99,102,241,.24); }
+  .cf{ background:#161a23; border:1px solid rgba(255,255,255,.08); color:#a2aabf; border-radius:8px; }
+  .inc{ background:#161a23; border:1px solid rgba(255,255,255,.07); }
+  .grid{ gap:20px; } .kpis{ gap:20px; }
+  #topo circle{ animation:none; filter:none; }
+  .dot{ box-shadow:none; }
+  .tooltip{ background:#1a1e28; border:1px solid rgba(255,255,255,.12); }
+  .comms{ background:#0f1219; border:1px solid rgba(255,255,255,.06); }
+  .knob select{ background:#1a1e28; }
   .dot{width:8px;height:8px;border-radius:50%;background:var(--good);display:inline-block;margin-right:6px;
     box-shadow:0 0 0 0 rgba(12,163,12,.6);animation:pulse 2s infinite}
   @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(12,163,12,.5)}70%{box-shadow:0 0 0 7px rgba(12,163,12,0)}100%{box-shadow:0 0 0 0 rgba(12,163,12,0)}}
@@ -467,7 +502,7 @@ async function load(){
 }
 
 /* ---------- live agent conversation (SSE streaming) ---------- */
-const AGENTS=["Commander","Correlator","Impact","Gate"];
+const AGENTS=["Commander","Correlator","Impact","Gate","Runbook"];
 function renderChips(){
   document.getElementById('agentChips').innerHTML =
     AGENTS.map(a=>`<div class="chip-agent" id="chip-${a}"><span class="d"></span>${a}</div>`).join('');

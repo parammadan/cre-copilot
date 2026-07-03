@@ -62,8 +62,31 @@ def t_gate(a):
     return json.dumps({"action": d.action, "confidence": d.confidence, "threshold": d.threshold,
                        "remediation": d.remediation, "reason": d.reason})
 
+def t_match_runbook(a):
+    svc = _svc(a.get("service_name", ""))
+    df = kusto.query(f"Runbooks | where Service=='{svc}' | top 1 by CreatedAt desc")
+    if df.empty:
+        return json.dumps({"match": False, "service": svc, "signature": f"{svc}:bad_deploy"})
+    r = df.iloc[0]
+    return json.dumps({"match": True, "runbookId": r.RunbookId, "signature": r.Signature,
+                       "steps": r.Steps, "timesUsed": int(r.TimesUsed)})
+
+
+def t_write_runbook(a):
+    svc = _svc(a.get("service_name", ""))
+    steps = str(a.get("steps", ""))[:400].replace('"', "'").replace("\n", " ")
+    rid = "RB-" + str(int(time.time()))[-5:]
+    kusto.command(
+        f".set-or-append Runbooks <| print RunbookId='{rid}', Signature='{svc}:bad_deploy', "
+        f"Service='{svc}', FailureType='bad_deploy', Steps=\"{steps}\", CreatedBy='agent', "
+        "CreatedAt=now(), TimesUsed=long(0)")
+    obs.log("runbook.authored", trace=_TRACE, runbook=rid, service=svc)
+    return json.dumps({"created": rid, "service": svc, "steps": steps})
+
+
 DISPATCH = {"detect": t_detect, "get_alerts": t_alerts, "detect_trend": t_trend,
-            "correlate": t_correlate, "assess_impact": t_impact, "apply_gate": t_gate}
+            "correlate": t_correlate, "assess_impact": t_impact, "apply_gate": t_gate,
+            "match_runbook": t_match_runbook, "write_runbook": t_write_runbook}
 
 def _fn(name, desc, props=None, required=None):
     return {"type": "function", "function": {"name": name, "description": desc,
@@ -81,6 +104,10 @@ TOOLDEFS = {
     "apply_gate": _fn("apply_gate", "Apply the DETERMINISTIC confidence gate (not an LLM decision).",
                       {"confidence": {"type": "number"}, "service_name": {"type": "string"}, "version": {"type": "string"}},
                       ["confidence", "service_name", "version"]),
+    "match_runbook": _fn("match_runbook", "Look up a runbook matching the root-cause service's failure signature.",
+                         {"service_name": {"type": "string"}}, ["service_name"]),
+    "write_runbook": _fn("write_runbook", "Author a new runbook for a service and add it to the store.",
+                         {"service_name": {"type": "string"}, "steps": {"type": "string"}}, ["service_name", "steps"]),
 }
 
 AGENTS = [
@@ -99,6 +126,11 @@ AGENTS = [
      "You are the Gate — deterministic, you do NOT decide. Call apply_gate(confidence, service_name, version) for each root cause. "
      "Output ONE line each ONLY: '<service> → AUTO-REMEDIATE (conf ≥ 0.70)' or '<service> → ESCALATE (conf < 0.70)'. "
      "No essays, no next-steps, no offers to run commands. Stop after the decisions."),
+    ("Runbook", ["match_runbook", "write_runbook"],
+     "You are the Runbook agent. For the root-cause service call match_runbook(service_name). "
+     "If match=true: output ONE line 'RUNBOOK <id> matched (used <n>×): <steps>'. "
+     "If match=false: call write_runbook(service_name, steps) with concise numbered remediation steps for this "
+     "deploy-caused failure, then output ONE line 'No runbook existed — authored <id>, added to the store'. Max two lines."),
 ]
 
 

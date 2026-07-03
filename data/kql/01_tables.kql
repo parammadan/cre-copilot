@@ -52,3 +52,16 @@
     Service:   string,
     DependsOn: string
 )
+
+// Runbook store — the growing playbook. Keyed by failure Signature (service + failure mode).
+// The Runbook agent looks up the signature; miss -> it authors a new one and appends it here.
+.create-merge table Runbooks (
+    RunbookId:   string,
+    Signature:   string,
+    Service:     string,
+    FailureType: string,
+    Steps:       string,
+    CreatedBy:   string,
+    CreatedAt:   datetime,
+    TimesUsed:   long
+)
