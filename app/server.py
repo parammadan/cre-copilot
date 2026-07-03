@@ -342,6 +342,23 @@ async def ask_copilot(req: Request) -> JSONResponse:
         return JSONResponse({"answer": "Copilot hit an error: " + str(e)[:160], "thread_id": body.get("thread_id")})
 
 
+@app.post("/api/postmortem")
+async def postmortem_ep(req: Request) -> JSONResponse:
+    """Run the Postmortem agent after an incident resolves (writes review + authors runbook if novel)."""
+    from fastapi.concurrency import run_in_threadpool
+    from agents.assistants import postmortem
+    body = await req.json()
+    service = str(body.get("service", "")).strip()
+    if not service:
+        return JSONResponse({"error": "no service"}, status_code=400)
+    facts = body.get("facts") or f"Root cause: {service}. Remediated via rollback to previous release."
+    try:
+        review = await run_in_threadpool(postmortem, service, facts)
+        return JSONResponse({"review": review})
+    except Exception as e:
+        return JSONResponse({"review": "Postmortem error: " + str(e)[:160]})
+
+
 @app.post("/api/teams/notify")
 async def teams_notify() -> JSONResponse:
     """Post an Adaptive Card for the current top incident to the Teams channel webhook."""

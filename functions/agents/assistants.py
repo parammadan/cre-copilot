@@ -84,9 +84,23 @@ def t_write_runbook(a):
     return json.dumps({"created": rid, "service": svc, "steps": steps})
 
 
+def t_write_postmortem(a):
+    svc = _svc(a.get("service_name", ""))
+    review = str(a.get("review", ""))[:1500].replace('"', "'").replace("\n", " ")
+    novel = str(a.get("novel", False)).lower() in ("true", "1", "yes")
+    pid = "PM-" + str(int(time.time()))[-6:]
+    kusto.command(
+        f".set-or-append Postmortems <| print PostmortemId='{pid}', Service='{svc}', "
+        f"RootCause='{_svc(a.get('root_cause', svc))}', Review=\"{review}\", "
+        f"Novel={'true' if novel else 'false'}, CreatedAt=now()")
+    obs.log("postmortem.written", trace=_TRACE, postmortem=pid, service=svc, novel=novel)
+    return json.dumps({"created": pid, "service": svc, "novel": novel})
+
+
 DISPATCH = {"detect": t_detect, "get_alerts": t_alerts, "detect_trend": t_trend,
             "correlate": t_correlate, "assess_impact": t_impact, "apply_gate": t_gate,
-            "match_runbook": t_match_runbook, "write_runbook": t_write_runbook}
+            "match_runbook": t_match_runbook, "write_runbook": t_write_runbook,
+            "write_postmortem": t_write_postmortem}
 
 def _fn(name, desc, props=None, required=None):
     return {"type": "function", "function": {"name": name, "description": desc,
@@ -108,6 +122,10 @@ TOOLDEFS = {
                          {"service_name": {"type": "string"}}, ["service_name"]),
     "write_runbook": _fn("write_runbook", "Author a new runbook for a service and add it to the store.",
                          {"service_name": {"type": "string"}, "steps": {"type": "string"}}, ["service_name", "steps"]),
+    "write_postmortem": _fn("write_postmortem", "Store the post-incident review.",
+                            {"service_name": {"type": "string"}, "review": {"type": "string"},
+                             "novel": {"type": "boolean"}, "root_cause": {"type": "string"}},
+                            ["service_name", "review"]),
 }
 
 AGENTS = [
@@ -126,11 +144,11 @@ AGENTS = [
      "You are the Gate — deterministic, you do NOT decide. Call apply_gate(confidence, service_name, version) for each root cause. "
      "Output ONE line each ONLY: '<service> → AUTO-REMEDIATE (conf ≥ 0.70)' or '<service> → ESCALATE (conf < 0.70)'. "
      "No essays, no next-steps, no offers to run commands. Stop after the decisions."),
-    ("Runbook", ["match_runbook", "write_runbook"],
-     "You are the Runbook agent. For the root-cause service call match_runbook(service_name). "
-     "If match=true: output ONE line 'RUNBOOK <id> matched (used <n>×): <steps>'. "
-     "If match=false: call write_runbook(service_name, steps) with concise numbered remediation steps for this "
-     "deploy-caused failure, then output ONE line 'No runbook existed — authored <id>, added to the store'. Max two lines."),
+    ("Runbook", ["match_runbook"],
+     "You are the Runbook agent, running DURING triage. Call match_runbook(service_name) for the root cause. "
+     "If match=true: output ONE line 'RUNBOOK <id> matched (used <n>×): <steps>' — suggest this known fix now. "
+     "If match=false: output ONE line 'NOVEL incident — no runbook matches this signature; the Postmortem agent "
+     "will author one after resolution.' You do NOT author runbooks (that's the Postmortem agent). One line only."),
 ]
 
 
@@ -200,6 +218,42 @@ def ask(question: str, thread_id: str | None = None):
     msg = client.beta.threads.messages.list(thread_id=thread_id, order="desc", limit=1).data[0]
     answer = msg.content[0].text.value if msg.content else "(no answer)"
     return answer, thread_id
+
+
+_PM_ID = None
+
+
+def _postmortem_agent():
+    global _PM_ID
+    if _PM_ID:
+        return _PM_ID
+    tools = [TOOLDEFS[t] for t in ("match_runbook", "write_runbook", "write_postmortem")]
+    instr = ("You are the Postmortem agent — you run AFTER an incident resolves. From the incident facts given, "
+             "write a concise post-incident review with these sections: What happened, Root cause, Impact, "
+             "Remediation, Follow-ups. THEN call match_runbook(service_name): if match=false the incident was "
+             "NOVEL — call write_runbook(service_name, steps) to add a runbook distilled from this incident; "
+             "if match=true, note the existing runbook was reused. Finally call "
+             "write_postmortem(service_name, review, novel, root_cause) to store it. Return the review text.")
+    existing = {a.name: a for a in client.beta.assistants.list(limit=100).data if a.name == "CRE-Postmortem"}
+    if "CRE-Postmortem" in existing:
+        a = client.beta.assistants.update(existing["CRE-Postmortem"].id, model=MODEL, instructions=instr, tools=tools)
+    else:
+        a = client.beta.assistants.create(model=MODEL, name="CRE-Postmortem", instructions=instr, tools=tools)
+    _PM_ID = a.id
+    return _PM_ID
+
+
+def postmortem(service: str, facts: str) -> str:
+    """Run the Postmortem agent after resolution: writes the review + authors a runbook if novel."""
+    aid = _postmortem_agent()
+    tid = client.beta.threads.create().id
+    client.beta.threads.messages.create(
+        thread_id=tid, role="user",
+        content=f"Incident on {service} has RESOLVED. Facts:\n{facts}\n\nWrite the post-incident review and handle the runbook per your instructions.")
+    obs.log("postmortem.run", service=service)
+    _run_agent(tid, aid)
+    msg = client.beta.threads.messages.list(thread_id=tid, order="desc", limit=1).data[0]
+    return msg.content[0].text.value if msg.content else "(no review)"
 
 
 def run():

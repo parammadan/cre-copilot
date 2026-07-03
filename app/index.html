@@ -652,8 +652,19 @@ async function approve(service, alertService, btn){
   document.getElementById('statusText').textContent="remediating "+service+"…";
   await fetch('/api/remediate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({service})});
   await load();                        // topology re-colors: RED -> GREEN
-  btn.textContent="✓ remediated"; btn.closest('.approval-card').classList.add('done');
+  btn.textContent="✓ remediated"; const card=btn.closest('.approval-card'); card.classList.add('done');
   document.getElementById('statusText').textContent="healed · "+service+" rolled back, "+alertService+" recovered";
+  // Postmortem agent runs AFTER resolution: writes the review + authors a runbook if novel
+  const note=document.createElement('div'); note.className='cf'; note.style.marginTop='10px';
+  note.textContent='📝 Postmortem agent writing the review…'; card.appendChild(note);
+  try{
+    const inc=(STATE.incidents||[]).find(i=>i.rootCause.service===service)||{rootCause:{}};
+    const rc=inc.rootCause||{};
+    const facts=`Root cause ${service} ${rc.version||''} (confidence ${rc.confidence||''}); alert on ${alertService}; auto-remediated via rollback; service healed red→green.`;
+    const r=await fetch('/api/postmortem',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({service, facts})});
+    const d=await r.json(); note.textContent='📝 Post-incident review:\n'+(d.review||'(none)');
+    note.style.whiteSpace='pre-wrap';
+  }catch(e){ note.textContent='📝 postmortem failed'; }
 }
 async function breakService(svc){
   document.getElementById('statusText').textContent="💥 injecting failure into "+svc+"…";
