@@ -167,6 +167,31 @@
   .cp-msg.a{ align-self:flex-start; background:#1a1e28; color:#e6e8ee; border:1px solid rgba(255,255,255,.08); }
   .cp-input{ display:flex; gap:8px; padding:12px; border-top:1px solid rgba(255,255,255,.08); }
   .cp-input input{ flex:1; background:#0f1219; border:1px solid rgba(255,255,255,.12); border-radius:8px; padding:10px 12px; color:#e6e8ee; }
+  /* onboarding flow */
+  #onboarding{ position:fixed; inset:0; z-index:1000; display:flex; align-items:center; justify-content:center; padding:24px;
+    background:radial-gradient(1000px 620px at 70% -10%, rgba(99,102,241,.20), transparent 60%),
+               radial-gradient(800px 500px at 15% 115%, rgba(56,189,248,.12), transparent 55%), #07080f; }
+  #onboarding.hidden{ display:none; }
+  .ob-card{ width:100%; max-width:560px; padding:40px; text-align:center; border-radius:20px;
+    background:linear-gradient(180deg,rgba(255,255,255,.055),rgba(255,255,255,.02));
+    border:1px solid rgba(167,139,250,.22); box-shadow:0 30px 90px rgba(0,0,0,.6); }
+  .ob-screen{ display:none; } .ob-screen.active{ display:block; }
+  .ob-logo{ font-size:32px; font-weight:700; letter-spacing:-.4px;
+    background:linear-gradient(90deg,#fff,#c4b5fd 58%,#7dd3fc); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
+  .ob-sub{ color:#9aa2b4; margin-top:8px; font-size:15px; }
+  .ob-tag{ display:inline-block; margin-top:16px; font-size:11.5px; color:#c4b5fd; border:1px solid rgba(167,139,250,.35); border-radius:999px; padding:4px 12px; }
+  .ob-btn{ margin-top:26px; background:linear-gradient(90deg,#7c3aed,#38bdf8); color:#fff; border:none; border-radius:10px;
+    padding:13px 22px; font-size:15px; font-weight:650; cursor:pointer; box-shadow:0 0 30px rgba(139,92,246,.4); }
+  .ob-btn:hover{ filter:brightness(1.08); }
+  .ob-h{ font-size:20px; font-weight:650; margin-bottom:4px; color:#f4f5f8; }
+  .ob-list{ text-align:left; margin:22px 0; display:flex; flex-direction:column; gap:10px; }
+  .ob-row{ display:flex; justify-content:space-between; align-items:center; padding:12px 14px; font-size:14px;
+    background:#141720; border:1px solid rgba(255,255,255,.07); border-radius:10px; }
+  .ob-status{ font-size:12.5px; color:#9aa2b4; } .ob-status.ok{ color:#22c55e; font-weight:600; }
+  .ob-facts{ text-align:left; margin:18px 0; display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .ob-fact{ background:#141720; border:1px solid rgba(255,255,255,.07); border-radius:10px; padding:12px; font-size:13px; color:#cdd2de; }
+  .ob-fact b{ color:#f4f5f8; }
+  .ob-foot{ margin-top:20px; font-size:11px; color:#6b7280; }
   .dot{width:8px;height:8px;border-radius:50%;background:var(--good);display:inline-block;margin-right:6px;
     box-shadow:0 0 0 0 rgba(12,163,12,.6);animation:pulse 2s infinite}
   @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(12,163,12,.5)}70%{box-shadow:0 0 0 7px rgba(12,163,12,0)}100%{box-shadow:0 0 0 0 rgba(12,163,12,0)}}
@@ -218,6 +243,41 @@
 </style>
 </head>
 <body>
+<div id="onboarding" class="hidden">
+  <div class="ob-card">
+    <div class="ob-screen active" id="ob1">
+      <div class="ob-logo">CRE Copilot</div>
+      <div class="ob-sub">AI reliability engineer for Azure live-site operations</div>
+      <div class="ob-tag">demo workspace</div>
+      <div><button class="ob-btn" id="obEnter">Enter demo workspace →</button></div>
+    </div>
+    <div class="ob-screen" id="ob2">
+      <div class="ob-h">Connecting your reliability workspace</div>
+      <div class="ob-sub" style="font-size:13px">Wiring up the demo's real components</div>
+      <div class="ob-list" id="obList">
+        <div class="ob-row"><span>Azure Data Explorer (Kusto)</span><span class="ob-status">connecting…</span></div>
+        <div class="ob-row"><span>Azure OpenAI</span><span class="ob-status">connecting…</span></div>
+        <div class="ob-row"><span>Local Microservice Lab</span><span class="ob-status">connecting…</span></div>
+        <div class="ob-row"><span>Runbooks</span><span class="ob-status">connecting…</span></div>
+        <div class="ob-row"><span>Telemetry Collector</span><span class="ob-status">connecting…</span></div>
+      </div>
+      <div><button class="ob-btn" id="obContinue" disabled style="opacity:.5">Continue</button></div>
+    </div>
+    <div class="ob-screen" id="ob3">
+      <div class="ob-h">✅ CRE Copilot is now monitoring your reliability workspace</div>
+      <div class="ob-facts">
+        <div class="ob-fact"><b>4</b> services monitored</div>
+        <div class="ob-fact"><b>ADX-backed</b> telemetry online</div>
+        <div class="ob-fact"><b>Multi-agent</b> investigation enabled</div>
+        <div class="ob-fact"><b>Deterministic</b> confidence gate enabled</div>
+        <div class="ob-fact" style="grid-column:1/-1"><b>Human approval</b> required before any remediation</div>
+      </div>
+      <div><button class="ob-btn" id="obOpen">Open Live Incident Console →</button></div>
+    </div>
+    <div class="ob-foot">Demo workspace · local microservice lab · ADX-backed telemetry · no production systems connected</div>
+  </div>
+</div>
+
 <div class="wrap">
   <header>
     <div>
@@ -629,6 +689,23 @@ document.getElementById('askBtn').addEventListener('click',cpToggle);
 document.getElementById('cpClose').addEventListener('click',cpToggle);
 document.getElementById('cpSend').addEventListener('click',cpSend);
 document.getElementById('cpInput').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); cpSend(); }});
+
+/* ---------- onboarding flow (frontend-only; backend untouched) ---------- */
+(function(){
+  const ob=document.getElementById('onboarding');
+  const p=new URLSearchParams(location.search);
+  if(p.has('skip') || sessionStorage.getItem('cre_entered')){ ob.classList.add('hidden'); return; }
+  ob.classList.remove('hidden');
+  const show=id=>{ document.querySelectorAll('.ob-screen').forEach(s=>s.classList.remove('active')); document.getElementById(id).classList.add('active'); };
+  document.getElementById('obEnter').onclick=()=>{
+    show('ob2');
+    const rows=[...document.querySelectorAll('#obList .ob-status')];
+    rows.forEach((el,i)=>setTimeout(()=>{ el.textContent='Connected ✓'; el.classList.add('ok');
+      if(i===rows.length-1){ const c=document.getElementById('obContinue'); c.disabled=false; c.style.opacity=1; } }, 400+i*450));
+  };
+  document.getElementById('obContinue').onclick=()=>show('ob3');
+  document.getElementById('obOpen').onclick=()=>{ sessionStorage.setItem('cre_entered','1'); ob.classList.add('hidden'); };
+})();
 
 /* ---------- human-in-the-loop approval + cure loop ---------- */
 function showApproval(){
