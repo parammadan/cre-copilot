@@ -60,16 +60,28 @@ def t_impact(a):
 
 # ---- EVIDENCE tools (real service state; graceful if services aren't running) ----
 SERVICE_PORTS = {"checkout-api": 8101, "payment-service": 8102, "inventory-service": 8103, "auth-service": 8104}
+_SERVICE_ENV = {"checkout-api": "CHECKOUT_URL", "payment-service": "PAYMENT_URL",
+                "inventory-service": "INVENTORY_URL", "auth-service": "AUTH_URL"}
+
+
+def _service_base(svc):
+    """Base URL for a service — env override (Azure internal DNS) else local port. Matches server.py."""
+    import os
+    override = os.environ.get(_SERVICE_ENV.get(svc, ""))
+    if override:
+        return override.rstrip("/")
+    port = SERVICE_PORTS.get(svc)
+    return f"http://127.0.0.1:{port}" if port else None
 
 
 def t_service_health(a):
     import requests
     svc = _svc(a.get("service_name", ""))
-    port = SERVICE_PORTS.get(svc)
-    if not port:
+    base = _service_base(svc)
+    if not base:
         return json.dumps({"service": svc, "status": "unknown"})
     try:
-        return json.dumps(requests.get(f"http://127.0.0.1:{port}/health", timeout=1.5).json())
+        return json.dumps(requests.get(f"{base}/health", timeout=1.5).json())
     except Exception:
         return json.dumps({"service": svc, "status": "unreachable", "note": "service not running — rely on telemetry evidence"})
 
