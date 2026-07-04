@@ -748,9 +748,24 @@ function runIncident(onDone){
     else if(ev.type==='evidence'){ const o=ownerFor(ev.tool,ev.agent); workerLine(o,undefined,ev.summary); evLine(ev.tool,ev.summary); }
     else if(ev.type==='agent_end'){ setWorker(ev.agent,'done'); const c=(tok[ev.agent]||'').trim(); if(c) workerLine(ev.agent,undefined,'“'+c.slice(0,140)+(c.length>140?'…':'')+'”'); }
     else if(ev.type==='error'){ evLine('error',ev.message); }
-    else if(ev.type==='done'){ es.close(); ORDER.forEach(w=>{ if(wstate(w)==='working') setWorker(w,'done'); }); setWorker('Verifier','waiting'); btn.disabled=false; btn.textContent="▶ Run incident response"; load().then(()=>{ showApproval(); if(onDone) onDone(); }); }
+    else if(ev.type==='done'){ es.close(); ORDER.forEach(w=>{ if(wstate(w)==='working') setWorker(w,'done'); }); setWorker('Verifier','waiting'); btn.disabled=false; btn.textContent="▶ Run incident response"; load().then(()=>{ showApproval(); autoEscalate(); if(onDone) onDone(); }); }
   };
   es.onerror=()=>{ es.close(); btn.disabled=false; btn.textContent="▶ Run incident response"; if(onDone) onDone(); };
+}
+
+/* ---------- automatic Teams escalation (backend decides via the gate; LLM never posts) ---------- */
+async function autoEscalate(){
+  try{
+    const r=await fetch('/api/escalate',{method:'POST'});
+    const d=await r.json();
+    const s=document.getElementById('statusText');
+    if(!d.configured && (d.not_configured||[]).length){ s.textContent="Teams integration not configured — escalation not posted"; return; }
+    const bits=[];
+    if((d.posted||[]).length) bits.push("📣 escalated to Teams: "+d.posted.join(', '));
+    if((d.auto_remediated||[]).length) bits.push("🤖 auto-remediated (autonomous): "+d.auto_remediated.join(', '));
+    if((d.duplicates||[]).length) bits.push("(already posted: "+d.duplicates.join(', ')+")");
+    if(bits.length) s.textContent=bits.join(' · ');
+  }catch(e){ /* non-fatal */ }
 }
 
 /* ---------- workspace status (live, backend-driven — no hardcoded values) ---------- */

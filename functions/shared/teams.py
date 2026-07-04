@@ -50,6 +50,45 @@ def build_incident_card(inc: dict, approve_url: str, console_url: str) -> dict:
             "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive", "content": card}]}
 
 
+def build_escalation_card(inc: dict, incident_id: str, reason: str, evidence: list,
+                          approve_url: str, reject_url: str, console_url: str) -> dict:
+    """Auto-escalation card posted by the BACKEND when the deterministic gate escalates.
+    Includes incident id, service, severity, root-cause candidate, confidence, reason, top
+    evidence, and Approve / Reject actions."""
+    rc = inc.get("rootCause", {})
+    conf = float(rc.get("confidence", 0))
+    sev = inc.get("severity", "Sev?")
+    body = [
+        {"type": "TextBlock", "size": "Large", "weight": "Bolder", "color": "Warning",
+         "text": f"🧑 Escalation — {inc.get('alertService', '?')} ({sev})"},
+        {"type": "TextBlock", "wrap": True, "isSubtle": True, "text": reason},
+        {"type": "FactSet", "facts": [
+            {"title": "Incident", "value": incident_id},
+            {"title": "Affected service", "value": inc.get("alertService", "?")},
+            {"title": "Severity", "value": sev},
+            {"title": "Root cause candidate", "value": f"{rc.get('service', '?')} {rc.get('version', '')}"},
+            {"title": "Confidence", "value": f"{conf:.2f}  (gate {ACT_THRESHOLD:.2f})"},
+        ]},
+    ]
+    if evidence:
+        body.append({"type": "TextBlock", "weight": "Bolder", "text": "Top evidence", "spacing": "Medium"})
+        for e in evidence[:4]:
+            body.append({"type": "TextBlock", "wrap": True, "size": "Small", "spacing": "None", "text": f"• {e}"})
+    card = {
+        "type": "AdaptiveCard",
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "version": "1.4",
+        "body": body,
+        "actions": [
+            {"type": "Action.OpenUrl", "title": "✅ Approve remediation", "url": approve_url},
+            {"type": "Action.OpenUrl", "title": "🔎 Reject / keep investigating", "url": reject_url},
+            {"type": "Action.OpenUrl", "title": "Open Console", "url": console_url},
+        ],
+    }
+    return {"type": "message",
+            "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive", "content": card}]}
+
+
 def post_card(webhook_url: str, payload: dict) -> dict:
     """POST the card to the Teams Incoming Webhook (dry-run if no URL configured)."""
     if not webhook_url:
