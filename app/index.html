@@ -819,7 +819,8 @@ function runIncident(onDone){
   document.getElementById('evfeed').innerHTML='';
   clearTimeline(); _TRACE=null; updateRuntime();
   // headed Portal Agent runs in PARALLEL (local-only, flag-gated) — opens Azure Portal beside the app
-  const _psvc=(STATE&&STATE.incidents&&STATE.incidents[0]&&STATE.incidents[0].rootCause&&STATE.incidents[0].rootCause.service)||'';
+  // Portal Agent opens the service you acted on in the sandbox; fall back to the top incident's root cause.
+  const _psvc=window._lastSimTarget||(STATE&&STATE.incidents&&STATE.incidents[0]&&STATE.incidents[0].rootCause&&STATE.incidents[0].rootCause.service)||'';
   runPortalAgent(_psvc);
   const mode=new URLSearchParams(location.search).get('mode');
   const es=new EventSource('/api/incident/stream'+(mode?('?mode='+encodeURIComponent(mode)):''));
@@ -842,6 +843,7 @@ function runIncident(onDone){
 window._portalEnabled=false;
 const PORTAL_STATE_MAP={'Opening browser':'thinking','Navigating':'calling','Inspecting':'calling','Evidence captured':'thinking','Complete':'done','Failed':'failed','disabled':'idle','Idle':'idle'};
 window._lastSimEvent='generic';   // set by sandbox controls → drives contextual portal navigation
+window._lastSimTarget='';         // the service you acted on → the Portal Agent opens THIS one
 fetch('/api/portal-agent/config').then(r=>r.json()).then(d=>{
   window._portalEnabled=!!d.enabled;
   if(window._portalEnabled) renderChips(true);
@@ -981,9 +983,9 @@ document.getElementById('traffic').addEventListener('input',e=>document.getEleme
 document.getElementById('traffic').addEventListener('change',e=>{window._lastSimEvent='traffic';simPost('/api/sim/traffic',{value:+e.target.value},'traffic '+(+e.target.value).toFixed(1)+'×');});
 document.getElementById('noise').addEventListener('input',e=>document.getElementById('noiseVal').textContent=(+e.target.value).toFixed(1)+'×');
 document.getElementById('noise').addEventListener('change',e=>simPost('/api/sim/noise',{value:+e.target.value},'noise '+(+e.target.value).toFixed(1)+'×'));
-document.getElementById('badDeployBtn').addEventListener('click',()=>{window._lastSimEvent='bad_deploy';simPost('/api/sim/deploy',{service:document.getElementById('simsvc').value},'bad deploy → '+document.getElementById('simsvc').value);});
-document.getElementById('injErrBtn').addEventListener('click',()=>{window._lastSimEvent='errors';simPost('/api/sim/errors',{service:document.getElementById('simsvc').value,value:8},'errors → '+document.getElementById('simsvc').value);});
-document.getElementById('killBtn').addEventListener('click',()=>{window._lastSimEvent='kill';simPost('/api/sim/kill',{service:document.getElementById('simsvc').value},'kill → '+document.getElementById('simsvc').value);});
+document.getElementById('badDeployBtn').addEventListener('click',()=>{window._lastSimEvent='bad_deploy';window._lastSimTarget=document.getElementById('simsvc').value;simPost('/api/sim/deploy',{service:document.getElementById('simsvc').value},'bad deploy → '+document.getElementById('simsvc').value);});
+document.getElementById('injErrBtn').addEventListener('click',()=>{window._lastSimEvent='errors';window._lastSimTarget=document.getElementById('simsvc').value;simPost('/api/sim/errors',{service:document.getElementById('simsvc').value,value:8},'errors → '+document.getElementById('simsvc').value);});
+document.getElementById('killBtn').addEventListener('click',()=>{window._lastSimEvent='kill';window._lastSimTarget=document.getElementById('simsvc').value;simPost('/api/sim/kill',{service:document.getElementById('simsvc').value},'kill → '+document.getElementById('simsvc').value);});
 document.getElementById('sandReset').addEventListener('click',()=>simPost('/api/sim/reset',{},'reset sandbox'));
 
 /* ---------- Ask CRE Copilot ---------- */
@@ -1158,7 +1160,7 @@ async function approve(service, alertService, btn){
   }catch(e){ note.textContent='📝 postmortem failed'; }
 }
 async function breakService(svc){
-  window._lastSimEvent='kill';
+  window._lastSimEvent='kill'; window._lastSimTarget=svc;
   document.getElementById('statusText').textContent="💥 injecting failure into "+svc+"…";
   await fetch('/api/break',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({service:svc})});
   await load();          // topology reloads -> the service you clicked goes RED

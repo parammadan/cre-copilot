@@ -85,11 +85,10 @@ def _plan_for(event: str, app: str) -> list:
     then LOG STREAM as the resting page (where we hold to watch live updates)."""
     dl = lambda b="": _deeplink(app, b)
     ls = dl("logstream")
-    ai = _ai_link("failures") or ls
     first = {
         "bad_deploy": (dl("revisionManagement"), "Revisions"),
         "kill":       (dl(), "Container App overview"),
-        "errors":     (ai, "App Insights · Failures"),
+        "errors":     (ls, "Log stream (live)"),     # real live logs — App Insights isn't instrumented (would be empty)
         "traffic":    (dl("metrics"), "Metrics"),
     }.get(event, (dl(), "Overview"))
     return [(first[0], first[1], 5000), (ls, "Log stream (live)", 8000)]
