@@ -63,6 +63,30 @@
   .worker[data-state="done"] .wbar i{width:100%;background:var(--good);animation:none}
   .worker[data-state="done"] .wterm{max-height:150px;overflow-y:auto}
   .worker[data-state="waiting"] .wdot{background:#d9a406} .worker[data-state="waiting"] .wstat{color:#d9a406}
+  .worker[data-state="thinking"]{border-color:var(--blue)} .worker[data-state="thinking"] .wdot{background:var(--blue);animation:pulse2 1.3s infinite} .worker[data-state="thinking"] .wstat{color:var(--blue)}
+  .worker[data-state="thinking"] .wbar i{width:60%;background:var(--blue);animation:wshimmer 1.1s ease-in-out infinite}
+  .worker[data-state="calling"]{border-color:var(--blue);box-shadow:0 0 0 2px rgba(59,130,246,.14)} .worker[data-state="calling"] .wdot{background:var(--blue);animation:pulse2 .7s infinite} .worker[data-state="calling"] .wstat{color:var(--blue)}
+  .worker[data-state="calling"] .wbar i{width:100%;background:var(--blue);animation:wshimmer .8s ease-in-out infinite}
+  .worker[data-state="failed"] .wdot{background:var(--critical)} .worker[data-state="failed"] .wstat{color:var(--critical)} .worker[data-state="failed"] .wbar i{width:100%;background:var(--critical);animation:none}
+  .worker .wts{font-size:9.5px;color:var(--muted);font-family:ui-monospace,monospace;margin-left:6px}
+  /* live runtime strip */
+  .runtime{display:flex;flex-wrap:wrap;gap:8px}
+  .rt-pill{display:flex;align-items:center;gap:7px;border:1px solid var(--border);border-radius:9px;background:var(--surface-2);padding:7px 11px;font-size:11.5px}
+  .rt-pill .led{width:8px;height:8px;border-radius:50%;flex:none}
+  .rt-pill .k{color:var(--muted)} .rt-pill .v{color:var(--ink2);font-family:ui-monospace,monospace}
+  .rt-empty{color:var(--muted);font-size:12px}
+  /* investigation timeline (CI-log style) */
+  .timeline{border:1px solid var(--border);border-radius:10px;background:#0c0c0e;max-height:340px;overflow-y:auto;padding:8px 0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
+  .tl-empty{color:var(--muted);padding:8px 14px}
+  .tl-line{display:flex;gap:12px;padding:2px 14px;line-height:1.6;animation:evin .2s ease}
+  .tl-line:hover{background:rgba(255,255,255,.03)}
+  .tl-line .tl-ts{color:var(--muted);flex:none;white-space:nowrap}
+  .tl-line .tl-msg{color:var(--ink2)}
+  .tl-line.tool .tl-msg{color:var(--blue)} .tl-line.tool .tl-msg b{color:#93c5fd}
+  .tl-line.evidence .tl-msg{color:#8fdca0}
+  .tl-line.start .tl-msg,.tl-line.done .tl-msg{color:var(--ink);font-weight:600}
+  .tl-line.error .tl-msg{color:var(--critical)}
+  .tl-line.remediate .tl-msg{color:#c4b5fd}
   @keyframes wshimmer{0%{opacity:.55}50%{opacity:1}100%{opacity:.55}}
   .evfeed{border:1px solid var(--border);border-radius:10px;background:var(--surface-2);padding:10px 12px;max-height:460px;overflow-y:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;line-height:1.7}
   .evline{display:flex;gap:8px;padding:1px 0;animation:evin .25s ease}
@@ -424,6 +448,13 @@
         <div class="evfeed" id="evfeed"><div class="evempty">Run an incident — every tool call and its result streams here, timestamped.</div></div>
       </div>
     </div>
+
+    <div class="ops-h" style="margin-top:16px">Live runtime</div>
+    <div class="runtime" id="runtime"><div class="rt-empty">Live backend state appears here.</div></div>
+
+    <div class="ops-h" style="margin-top:16px">Investigation timeline</div>
+    <div class="timeline" id="timeline"><div class="tl-empty">Run an incident — every backend event streams here chronologically, like CI logs.</div></div>
+
     <div id="approval"></div>
   </div>
 
@@ -692,7 +723,37 @@ const TOOL_OWNER={detect:"Detector",get_alerts:"Detector",detect_trend:"Detector
   correlate:"Correlator",get_logs:"Correlator",
   assess_impact:"Impact",get_service_health:"Impact",
   apply_gate:"Gate",match_runbook:"Runbook",write_runbook:"Runbook"};
-const STATLABEL={idle:"Idle",working:"Working",done:"Complete",waiting:"Waiting"};
+const STATLABEL={idle:"Idle",working:"Working",done:"Completed",waiting:"Waiting",thinking:"Thinking",calling:"Calling tool",failed:"Failed"};
+const ACTIVE=["working","thinking","calling"];
+const isActive=s=>ACTIVE.indexOf(s)>=0;
+let _TRACE=null;
+function nowts(){ return new Date().toTimeString().slice(0,8); }
+/* investigation timeline — CI-log style, one line per REAL backend event */
+function tl(msg,kind){
+  const t=document.getElementById('timeline'); if(!t) return;
+  const e=t.querySelector('.tl-empty'); if(e) e.remove();
+  const d=document.createElement('div'); d.className='tl-line '+(kind||'');
+  d.innerHTML=`<span class="tl-ts">${nowts()}</span><span class="tl-msg">${msg}</span>`;
+  t.appendChild(d); t.scrollTop=t.scrollHeight;
+}
+function clearTimeline(){ const t=document.getElementById('timeline'); if(t) t.innerHTML=''; }
+/* live runtime — real backend state (workspace status + current trace + incident) */
+function updateRuntime(){
+  const el=document.getElementById('runtime'); if(!el) return;
+  const d=_wsLast, hex=c=>c==='green'?'#22a447':c==='yellow'?'#e0a915':c==='red'?'#e5484d':'#8a8a93';
+  const pill=(k,v,c)=>`<div class="rt-pill"><span class="led" style="background:${hex(c)}"></span><span class="k">${k}</span><span class="v">${hesc(v)}</span></div>`;
+  const svcUp=(d&&d.services||[]).filter(s=>s.status==='healthy').length, svcN=(d&&d.services||[]).length;
+  const inc=(STATE&&STATE.incidents&&STATE.incidents[0]);
+  const rows=[
+    pill('ADX', d&&d.adx&&d.adx.connected?(d.adx.latency_ms+'ms'):'down', d&&d.adx&&d.adx.connected?'green':'red'),
+    pill('Azure OpenAI', d&&d.aoai&&d.aoai.connected?(d.aoai.latency_ms+'ms'):'down', d&&d.aoai&&d.aoai.connected?'green':'red'),
+    pill('Collector', d&&d.collector&&d.collector.running?'running':'idle', d&&d.collector&&d.collector.running?'green':'yellow'),
+    pill('Microservices', svcN?(svcUp+'/'+svcN+' healthy'):'—', svcUp===svcN&&svcN?'green':'yellow'),
+    pill('Incident', inc?(inc.rootCause.service+' '+inc.rootCause.confidence.toFixed(2)):'none', inc?'yellow':'green'),
+    pill('Trace', _TRACE||'—', _TRACE?'green':'red'),
+  ];
+  el.innerHTML=rows.join('');
+}
 function hesc(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
 /* renderChips is the entry point called by load()/renderAll — now builds the worker board.
    Idempotent: only (re)builds when empty or forced, so a background load() never wipes live states. */
@@ -701,22 +762,23 @@ function renderChips(force){
   if(!force && host.children.length) return;
   host.innerHTML = WORKERS.map(([n,r])=>
     `<div class="worker" id="w-${n}" data-state="idle">
-       <div class="wh"><span class="wdot"></span><span class="wname">${n}</span><span class="wstat">Idle</span></div>
+       <div class="wh"><span class="wdot"></span><span class="wname">${n}</span><span class="wstat">Idle</span><span class="wts"></span></div>
        <div class="wrole">${r}</div>
        <div class="wbar"><i></i></div>
        <div class="wterm" id="term-${n}"></div>
      </div>`).join('');
 }
-function setWorker(n,state){
+function setWorker(n,state,detail){
   const el=document.getElementById('w-'+n); if(!el) return;
   el.dataset.state=state;
-  const s=el.querySelector('.wstat'); if(s) s.textContent=STATLABEL[state]||state;
+  const s=el.querySelector('.wstat'); if(s) s.textContent=detail||STATLABEL[state]||state;
+  const ts=el.querySelector('.wts'); if(ts) ts.textContent=nowts();
 }
 function wstate(n){ const el=document.getElementById('w-'+n); return el?el.dataset.state:null; }
-function startWorker(n){ // when a stage starts, finish any earlier stage still working
+function startWorker(n){ // when a stage starts, finish any earlier stage still active
   const idx=ORDER.indexOf(n);
-  ORDER.forEach((w,i)=>{ if(i<idx && wstate(w)==='working') setWorker(w,'done'); });
-  setWorker(n,'working');
+  ORDER.forEach((w,i)=>{ if(i<idx && isActive(wstate(w))) setWorker(w,'done'); });
+  setWorker(n,'thinking');
 }
 function workerLine(n,cmd,res){
   const t=document.getElementById('term-'+n); if(!t) return;
@@ -737,18 +799,20 @@ function runIncident(onDone){
   const btn=document.getElementById('runBtn'); btn.disabled=true; btn.textContent="▶ agents working…";
   renderChips(true);                               // force-reset worker board to Idle for a fresh run
   document.getElementById('evfeed').innerHTML='';
+  clearTimeline(); _TRACE=null; updateRuntime();
   const mode=new URLSearchParams(location.search).get('mode');
   const es=new EventSource('/api/incident/stream'+(mode?('?mode='+encodeURIComponent(mode)):''));
   if(mode==='dynamic'){ document.getElementById('statusText').textContent="🧭 autonomous investigation (dynamic mode)"; }
   const tok={};                                    // buffer per-agent prose → one conclusion line
   es.onmessage=e=>{ const ev=JSON.parse(e.data);
-    if(ev.type==='agent_start'){ startWorker(ev.agent); }
+    if(ev.type==='incident_start'){ _TRACE=ev.trace||null; updateRuntime(); tl('Investigation started'+(ev.mode?(' · '+ev.mode+' mode'):''),'start'); }
+    else if(ev.type==='agent_start'){ startWorker(ev.agent); tl(hesc(ev.agent)+' started'); }
     else if(ev.type==='token'){ tok[ev.agent]=(tok[ev.agent]||'')+ev.text; }
-    else if(ev.type==='tool_call'){ const o=ownerFor(ev.tool,ev.agent); if(wstate(o)==='idle') setWorker(o,'working'); workerLine(o,ev.tool+'()'); }
-    else if(ev.type==='evidence'){ const o=ownerFor(ev.tool,ev.agent); workerLine(o,undefined,ev.summary); evLine(ev.tool,ev.summary); }
-    else if(ev.type==='agent_end'){ setWorker(ev.agent,'done'); const c=(tok[ev.agent]||'').trim(); if(c) workerLine(ev.agent,undefined,'“'+c.slice(0,140)+(c.length>140?'…':'')+'”'); }
-    else if(ev.type==='error'){ evLine('error',ev.message); }
-    else if(ev.type==='done'){ es.close(); ORDER.forEach(w=>{ if(wstate(w)==='working') setWorker(w,'done'); }); setWorker('Verifier','waiting'); btn.disabled=false; btn.textContent="▶ Run incident response"; load().then(()=>{ showApproval(); autoEscalate(); if(onDone) onDone(); }); }
+    else if(ev.type==='tool_call'){ const o=ownerFor(ev.tool,ev.agent); setWorker(o,'calling','Calling '+ev.tool+'()'); workerLine(o,ev.tool+'()'); tl('<b>'+hesc(ev.agent)+'</b> → '+hesc(ev.tool)+'()','tool'); }
+    else if(ev.type==='evidence'){ const o=ownerFor(ev.tool,ev.agent); setWorker(o,'thinking','Analyzing result'); workerLine(o,undefined,ev.summary); evLine(ev.tool,ev.summary); tl(hesc(ev.tool)+' → '+hesc(ev.summary),'evidence'); }
+    else if(ev.type==='agent_end'){ setWorker(ev.agent,'done'); tl(hesc(ev.agent)+' completed','done'); const c=(tok[ev.agent]||'').trim(); if(c) workerLine(ev.agent,undefined,'“'+c.slice(0,140)+(c.length>140?'…':'')+'”'); }
+    else if(ev.type==='error'){ ORDER.forEach(w=>{ if(isActive(wstate(w))) setWorker(w,'failed'); }); evLine('error',ev.message); tl('error: '+hesc(ev.message),'error'); }
+    else if(ev.type==='done'){ es.close(); ORDER.forEach(w=>{ if(isActive(wstate(w))) setWorker(w,'done'); }); setWorker('Verifier','waiting','Waiting for approval'); tl('Investigation complete','done'); btn.disabled=false; btn.textContent="▶ Run incident response"; load().then(()=>{ updateRuntime(); showApproval(); autoEscalate(); if(onDone) onDone(); }); }
   };
   es.onerror=()=>{ es.close(); btn.disabled=false; btn.textContent="▶ Run incident response"; if(onDone) onDone(); };
 }
@@ -806,7 +870,7 @@ function renderWs(d){
 }
 let _wsLast=null;
 async function loadWorkspaceStatus(){
-  try{ const d=await (await fetch('/api/workspace/status')).json(); _wsLast=d; renderWs(d); return d; }
+  try{ const d=await (await fetch('/api/workspace/status')).json(); _wsLast=d; renderWs(d); updateRuntime(); return d; }
   catch(e){ const o=document.getElementById('wsOverall'); if(o){o.textContent='unreachable';o.className='ws-overall offline';} return null; }
 }
 renderChips();                                   // build worker board immediately (before slow first data load)
@@ -1008,12 +1072,17 @@ function showApproval(){
 async function approve(service, alertService, btn){
   btn.disabled=true; btn.textContent="⏳ rolling back…";
   document.getElementById('statusText').textContent="remediating "+service+"…";
+  tl('▶ Launching recovery for '+hesc(service),'remediate');
+  tl('Calling backend remediation endpoint (POST /api/remediate)','remediate');
   await fetch('/api/remediate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({service})});
+  tl('Waiting for service recovery (real /recover on '+hesc(service)+')','remediate');
   await load();                        // topology re-colors: RED -> GREEN
+  tl(service+' rolled back — topology healing RED→GREEN','remediate');
   btn.textContent="✓ remediated"; const card=btn.closest('.approval-card'); card.classList.add('done');
   document.getElementById('statusText').textContent="healed · "+service+" rolled back, "+alertService+" recovered";
   // Verifier agent runs AFTER remediation: independently confirms recovery from real /health + logs
-  setWorker('Verifier','working'); workerLine('Verifier','verify('+service+')');
+  setWorker('Verifier','calling','Calling verify()'); workerLine('Verifier','verify('+service+')');
+  tl('Verifier checking real /health + logs (POST /api/verify)','remediate');
   const vnote=document.createElement('div'); vnote.className='cf'; vnote.style.marginTop='10px';
   vnote.textContent='🔎 Verifier independently confirming recovery…'; card.appendChild(vnote);
   try{
@@ -1022,7 +1091,8 @@ async function approve(service, alertService, btn){
     const ok=/CONFIRMED/i.test(vd) && !/NOT CONFIRMED/i.test(vd);
     workerLine('Verifier',undefined,vd); evLine('verify',vd);
     setWorker('Verifier', ok?'done':'waiting'); vnote.textContent='🔎 '+vd;
-  }catch(e){ setWorker('Verifier','waiting'); vnote.textContent='🔎 verification failed'; }
+    tl((ok?'✓ Recovery confirmed — ':'⚠ Recovery NOT confirmed — ')+hesc(vd), ok?'done':'error');
+  }catch(e){ setWorker('Verifier','waiting'); vnote.textContent='🔎 verification failed'; tl('⚠ verification failed','error'); }
   // Postmortem agent runs AFTER verification: writes the review + authors a runbook if novel
   const note=document.createElement('div'); note.className='cf'; note.style.marginTop='10px';
   note.textContent='📝 Postmortem agent writing the review…'; card.appendChild(note);
