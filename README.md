@@ -10,7 +10,17 @@ remediation, and a **Verifier agent** independently confirming recovery before t
 
 Built to demonstrate SRE / service-engineering + multi-agent AI on the Microsoft / Azure stack.
 
+> **Demo workspace — honest framing:** telemetry is synthetic or from a local microservice lab (not a
+> production estate), and remediation is a simulated recovery. Everything *through the decision* —
+> detection, correlation, confidence, the deterministic gate, human approval, and verification — is
+> real and runs on live Azure services.
+
+**Deployed live on Azure Container Apps** · keyless (managed identity) · [demo script](demo/demo_script.md) · [architecture](docs/architecture.md) · [security](docs/security.md)
+
 ![CRE Copilot console](docs/screenshots/console.png)
+
+<!-- Add a ~15s demo GIF here once recorded (incident → investigate → approve → heal → verify):
+     ![CRE Copilot demo](docs/screenshots/demo.gif) -->
 
 ---
 
@@ -110,7 +120,12 @@ OpenAI, all via one managed identity (ACR pull + ADX viewer + Azure OpenAI user)
 | Telemetry collector | `collector/` |
 | Console (backend + UI) | `app/server.py`, `app/index.html` |
 | Infra (IaC) | `infra/main.bicep`, `infra/containerapps.bicep` |
+| Security posture (live) + audit | `/api/security/status`, `functions/shared/obs.py`, `docs/security.md` |
 | Evaluation harness (precision/recall) | `eval/` |
+
+Every dependency's health and the security posture are reported live (no hardcoded values):
+
+<p align="center"><img src="docs/screenshots/security.png" width="820" alt="Workspace status + Security & Governance"></p>
 
 ## Honest notes
 - This is a **demo workspace**: telemetry is synthetic or from the local microservice lab, not a real
