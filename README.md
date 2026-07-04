@@ -1,69 +1,121 @@
 # CRE Copilot
 
-AI-powered multi-agent incident response simulator.
+**AI-powered multi-agent incident response simulator.**
 
-A multi-agent **live-site incident-response** system on Azure. It detects an anomaly,
-correlates it to a root cause with a **confidence score**, and a **confidence gate**
-decides whether to **act autonomously** or **escalate to a human** — then computes blast
-radius and drafts a status update.
+A live-site incident-response system on Azure. A team of AI agents detects an anomaly,
+investigates **real evidence** (health, logs, metrics, deploys, dependency graph), correlates
+it to a root cause with a **confidence score**, and a **deterministic confidence gate** decides
+whether to **act autonomously** or **escalate to a human** — with the human approving before any
+remediation, and a **Verifier agent** independently confirming recovery before the incident closes.
 
-Built to demonstrate SRE / service-engineering + multi-agent AI on the Microsoft/Azure stack.
+Built to demonstrate SRE / service-engineering + multi-agent AI on the Microsoft / Azure stack.
+
+![CRE Copilot console](docs/screenshots/console.png)
 
 ---
 
 ## The idea
 Live-site incidents have a slow middle: an alert fires, then a human spends 30–90 minutes on
-"what changed?" and "is it safe to act?". CRE Copilot collapses that middle.
+*"what changed?"* and *"is it safe to act?"*. CRE Copilot collapses that middle — and shows its
+work like an operations center, so you watch each agent investigate rather than trusting a black box.
 
-```
-Telemetry ─▶ ADX (Kusto)
-              │
-   Detector ──┤  series_decompose_anomalies  → which services are anomalous?
-   Correlator ┤  proximity × anomaly × topology → root cause + confidence
-              ▼
-        CONFIDENCE GATE ──▶ confidence ≥ 0.70 ? ACT autonomously : ESCALATE to human
-              │
-   Impact  ───┤  downstream blast radius
-   Comms   ───┘  status-page update
-              ▼
-        Incidents table ─▶ dashboard (MTTR, auto vs escalated, confidence)
-
-Security: Key Vault + Managed Identity + RBAC — no secrets in code.
-```
-
-## Headline result
-Autonomous resolution cuts **MTTR from 81 min → 13 min** (6×) by acting in seconds on
-high-confidence cases and reserving humans for the ambiguous ones.
+**Headline result:** autonomous resolution cuts **MTTR from 81 min → 13 min (6×)** by acting in
+seconds on high-confidence cases and reserving humans for the ambiguous ones.
 
 ---
 
-## Run it
-```bash
-# prereqs: az login; ADX cluster running
-source demo/env.sh
+## How it works
 
-./demo/reset.sh        # plant two concurrent incidents into ADX
-./demo/run.sh          # handles both at once:
-                       #   checkout-api → payment-service (0.80) → 🤖 auto-remediate
-                       #   auth         → auth v8.0.0     (0.57) → 🧑 escalate to human
-./demo/run.sh 0.80     # stricter gate → both escalate (threshold is a real knob)
+```
+                      ┌──────────────── Azure Data Explorer (Kusto) ◀── collector ◀── microservices
+                      │                        ▲                                       (real /health,
+   Commander ─ plans the investigation         │ KQL: anomaly / correlate / impact      /metrics, /logs)
+   Detector  ─ series_decompose_anomalies  ── which services are anomalous?
+   Correlator─ proximity × anomaly × topology + logs + deploys ── root cause + CONFIDENCE
+   Impact    ─ dependency-graph walk ── blast radius
+        │
+        ▼
+   CONFIDENCE GATE  ──▶  confidence ≥ 0.70 ?  🤖 auto-remediate  :  🧑 escalate to human
+        │                         (deterministic — the LLM never sets its own confidence)
+        ▼
+   Human approves ─▶ Runbook agent applies fix ─▶ real POST /recover ─▶
+   Verifier agent  ─ independently confirms recovery from real /health + logs ─▶ close
+        │
+        ▼
+   Postmortem agent ─ writes the review, authors a runbook if the failure was novel
 ```
 
-## What's built
-| Piece | Where | Notes |
-|---|---|---|
-| Infra (IaC) | `infra/main.bicep` | ADX, Key Vault (RBAC), managed identity; Function tier behind `deployFunctions` flag |
-| Telemetry + planted incident | `data/generate_and_ingest.py` | payment-service deploy → checkout-api cascade + decoys |
-| **Detector** | `data/kql/03_detector.kql` | anomaly detection, baseline learned from clean history (`test_points`) |
-| **Correlator** | `data/kql/02_functions.kql` | root cause + confidence; beats "blame the latest deploy"; path-aware so concurrent incidents don't cross-blame |
-| **Confidence gate** | `functions/shared/confidence.py` | pure, testable act-vs-escalate logic |
-| Impact + Comms | `data/kql/04_impact.kql`, `functions/shared/comms.py` | blast radius + status update |
-| Orchestrator | `functions/orchestrate.py` | chains all four + the gate; writes `Incidents` |
-| Dashboard | `data/kql/05_dashboard.kql` | 7 ADX-dashboard tiles |
-| Copilot Studio agents | `agents/copilot_studio_setup.md` | 4 agents via the ADX connector; gate = condition node |
+The agents are **hosted Azure OpenAI Assistants** that call KQL functions and read-only investigation
+tools; the **gate is pure Python** (`0.40·proximity + 0.40·anomaly + 0.20·dependency`) so autonomy is
+deterministic and testable, never model-invented. Everything authenticates via **Managed Identity**
+(cloud) / `az login` (local) — no keys in code.
 
-## Notes
-- **Functions tier** is gated off (`deployFunctions=false`): new subscriptions ship with 0 App Service
-  compute quota. The orchestrator runs locally against the live cloud ADX; flip the flag once a quota
-  increase is granted — same code, same managed-identity model.
-- Everything authenticates via `az login` locally / managed identity in the cloud. No keys anywhere.
+---
+
+## What makes it more than a dashboard
+
+- **Real microservice lab** — `checkout-api`, `payment-service`, `inventory-service`, `auth-service`
+  are actual FastAPI services with dependencies, failure injection, and real `/health` cascades, so
+  blast radius and recovery are **measured, not mocked**.
+- **Operations-center console** — agents render as **live workers** (status · current tool · last
+  result), beside a timestamped **evidence feed** of every tool call → result. You see the engineering.
+- **Human-in-the-loop cure loop** — approve → real `/recover` → topology heals RED→GREEN → Verifier
+  confirms → postmortem.
+- **Deterministic gate + counterfactual** — each incident shows *"would flip to escalate if the anomaly
+  ratio were < N×"*, derived from the same formula.
+- **Live workspace health** — `/api/workspace/status` probes ADX, Azure OpenAI, the collector, and every
+  service in real time (no hardcoded values).
+- **Microsoft Teams** — posts a real Adaptive Card for the incident, with an Approve action that triggers
+  remediation. Honest preview mode when no webhook is configured.
+- **Dynamic mode** — `?mode=dynamic` lets a single orchestrator agent pick its own read-only tools
+  step-by-step (guardrailed: read-only, step cap, deterministic gate, human approval).
+
+---
+
+## Tech stack (Azure-native)
+Azure Data Explorer (Kusto) · Azure OpenAI (Assistants API, `gpt-5-mini`) · Azure Container Apps ·
+Azure Container Registry · FastAPI · Managed Identity + Key Vault + RBAC · Bicep (IaC) · Microsoft Teams.
+
+---
+
+## Run it locally
+```bash
+source demo/env.sh                       # env + local secrets (gitignored)
+
+./services/run_services.sh               # start the 4 microservices
+TELEMETRY_SOURCE=services \
+  ./data/.venv/bin/python collector/collector.py &   # (optional) real telemetry → ADX
+./demo/console.sh                        # console at http://localhost:8000
+```
+Break a service from the topology (or the sandbox controls), hit **Run incident response**, watch the
+agents investigate, then **Approve** to heal.
+
+## Deploy to Azure (Container Apps)
+```bash
+./infra/deploy_containerapps.sh          # builds 3 images, provisions env + 6 apps, keyless
+./infra/teardown_containerapps.sh        # tear down to stop billing
+```
+Backend + 4 microservices + always-on collector on Container Apps, reusing the existing ADX + Azure
+OpenAI, all via one managed identity (ACR pull + ADX viewer + Azure OpenAI user).
+
+---
+
+## Repo map
+| Area | Where |
+|---|---|
+| Hosted agents + tools + gate wiring | `functions/agents/assistants.py` |
+| Deterministic confidence gate (+ tests) | `functions/shared/confidence.py`, `functions/tests/` |
+| KQL: detector / correlator / impact / trend | `data/kql/*.kql` |
+| Microservice lab | `services/` |
+| Telemetry collector | `collector/` |
+| Console (backend + UI) | `app/server.py`, `app/index.html` |
+| Infra (IaC) | `infra/main.bicep`, `infra/containerapps.bicep` |
+| Evaluation harness (precision/recall) | `eval/` |
+
+## Honest notes
+- This is a **demo workspace**: telemetry is synthetic or from the local microservice lab, not a real
+  production estate. No production systems are connected.
+- The **gate is deterministic** by design — agents investigate and explain; the act-vs-escalate line is
+  pure code, and a human approves before any remediation.
+
+<p align="center"><img src="docs/screenshots/teams-card.png" width="460" alt="Teams Adaptive Card"></p>
