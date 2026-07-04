@@ -937,10 +937,12 @@ document.getElementById('cpInput').addEventListener('keydown',e=>{ if(e.key==='E
 (function(){
   const ob=document.getElementById('onboarding');
   const p=new URLSearchParams(location.search);
-  if(p.has('skip') || sessionStorage.getItem('cre_entered')){ ob.classList.add('hidden'); return; }
+  const forced=p.has('onboard');                 // ?onboard=1 → arriving from the React landing
+  if(p.has('skip')){ ob.classList.add('hidden'); return; }
+  if(!forced && sessionStorage.getItem('cre_entered')){ ob.classList.add('hidden'); return; }
   ob.classList.remove('hidden');
   const show=id=>{ document.querySelectorAll('.ob-screen').forEach(s=>s.classList.remove('active')); document.getElementById(id).classList.add('active'); };
-  document.getElementById('obEnter').onclick=async ()=>{
+  const runConnect=async ()=>{
     show('ob2');
     const rows=[...document.querySelectorAll('#obList .ob-status')];
     rows.forEach(el=>{ el.textContent='connecting…'; el.classList.remove('ok'); });
@@ -962,8 +964,10 @@ document.getElementById('cpInput').addEventListener('keydown',e=>{ if(e.key==='E
       if(i===rows.length-1){ const c=document.getElementById('obContinue'); c.disabled=false; c.style.opacity=1; }
     }, 250+i*350));
   };
+  document.getElementById('obEnter').onclick=runConnect;
   document.getElementById('obContinue').onclick=()=>show('ob3');
   document.getElementById('obOpen').onclick=()=>{ sessionStorage.setItem('cre_entered','1'); ob.classList.add('hidden'); };
+  if(forced){ runConnect(); }   // came from the React landing → skip "Enter", go straight to connectors
 })();
 
 /* ---------- human-in-the-loop approval + cure loop ---------- */

@@ -2,8 +2,8 @@ import { Routes, Route } from 'react-router-dom';
 import LandingPage from './components/LandingPage';
 import Workspace from './pages/Workspace';
 
-// "Launch Workspace" opens the full operations console (the complete existing app).
-const launchConsole = () => { window.location.href = '/console'; };
+// "Launch Workspace" → full console, via the 2-step onboarding (connectors → confirmation).
+const launchConsole = () => { window.location.href = '/console?onboard=1'; };
 
 export default function App() {
   return (
