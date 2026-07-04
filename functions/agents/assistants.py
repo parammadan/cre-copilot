@@ -145,6 +145,17 @@ DISPATCH = {"detect": t_detect, "get_alerts": t_alerts, "detect_trend": t_trend,
             "write_postmortem": t_write_postmortem,
             "get_service_health": t_service_health, "get_logs": t_get_logs}
 
+
+def _safe_dispatch(name, args):
+    """Run a tool; on ANY error return an error result to the agent instead of crashing the run.
+    A transient ADX/network blip in one tool must not kill the whole investigation."""
+    try:
+        return DISPATCH.get(name, lambda a: "{}")(args)
+    except Exception as e:
+        obs.log("tool.error", tool=name, error=str(e)[:200])
+        return json.dumps({"error": f"{name} failed: {str(e)[:160]}",
+                           "note": "transient tool error — proceed with the evidence you have"})
+
 def _fn(name, desc, props=None, required=None):
     return {"type": "function", "function": {"name": name, "description": desc,
             "parameters": {"type": "object", "properties": props or {}, "required": required or []}}}
@@ -222,7 +233,7 @@ def _run_agent(thread_id, assistant_id):
             outs = []
             for tc in run.required_action.submit_tool_outputs.tool_calls:
                 args = json.loads(tc.function.arguments or "{}")
-                outs.append({"tool_call_id": tc.id, "output": DISPATCH.get(tc.function.name, lambda a: "{}")(args)})
+                outs.append({"tool_call_id": tc.id, "output": _safe_dispatch(tc.function.name, args)})
             run = client.beta.threads.runs.submit_tool_outputs(thread_id=thread_id, run_id=run.id, tool_outputs=outs)
         else:
             time.sleep(1)
@@ -366,7 +377,7 @@ def _consume(stream, thread_id, name):
                     obs.log_tool(_TRACE, name, tc.function.name)
                     yield {"type": "tool_call", "agent": name, "tool": tc.function.name}
                     args = json.loads(tc.function.arguments or "{}")
-                    out = DISPATCH.get(tc.function.name, lambda a: "{}")(args)
+                    out = _safe_dispatch(tc.function.name, args)
                     yield {"type": "evidence", "agent": name, "tool": tc.function.name, "summary": str(out)[:180]}
                     outs.append({"tool_call_id": tc.id, "output": out})
                 nxt = client.beta.threads.runs.submit_tool_outputs_stream(
@@ -444,7 +455,7 @@ def _consume_dynamic(stream, thread_id, name, counter):
                         return
                     obs.log_tool(_TRACE, name, tc.function.name)
                     yield {"type": "tool_call", "agent": name, "tool": tc.function.name}
-                    out = DISPATCH.get(tc.function.name, lambda a: "{}")(json.loads(tc.function.arguments or "{}"))
+                    out = _safe_dispatch(tc.function.name, json.loads(tc.function.arguments or "{}"))
                     yield {"type": "evidence", "agent": name, "tool": tc.function.name, "summary": str(out)[:180]}
                     outs.append({"tool_call_id": tc.id, "output": out})
                 nxt = client.beta.threads.runs.submit_tool_outputs_stream(

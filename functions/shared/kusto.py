@@ -3,6 +3,7 @@
 (where it would use the managed identity instead)."""
 from __future__ import annotations
 import os
+import time
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -29,14 +30,33 @@ def _props() -> ClientRequestProperties:
     return p
 
 
-def _client() -> KustoClient:
-    return KustoClient(KustoConnectionStringBuilder.with_azure_token_credential(_CLUSTER, credential=_CRED))
+_CLIENT = None
 
 
-def query(kql: str):
-    """Run a query; return a pandas DataFrame (raises on failure — caller decides)."""
-    resp = _client().execute(_DB, kql, _props())
-    return dataframe_from_result_table(resp.primary_results[0])
+def _client(fresh: bool = False) -> KustoClient:
+    """Cached client (reused → fewer connections, more stable). `fresh=True` rebuilds it,
+    e.g. after a transient network error dropped the connection."""
+    global _CLIENT
+    if fresh or _CLIENT is None:
+        _CLIENT = KustoClient(KustoConnectionStringBuilder.with_azure_token_credential(_CLUSTER, credential=_CRED))
+    return _CLIENT
+
+
+def query(kql: str, tries: int = 3):
+    """Run a query; return a pandas DataFrame. Retries transient network/timeout errors with a
+    fresh client (reads are idempotent) so one blip doesn't kill an investigation. Raises after
+    the last attempt — caller decides."""
+    last = None
+    for i in range(tries):
+        try:
+            resp = _client(fresh=(i > 0)).execute(_DB, kql, _props())
+            return dataframe_from_result_table(resp.primary_results[0])
+        except Exception as e:
+            last = e
+            if i < tries - 1:
+                time.sleep(0.5 * (i + 1))
+                continue
+    raise last
 
 
 def query_safe(kql: str) -> pd.DataFrame:
