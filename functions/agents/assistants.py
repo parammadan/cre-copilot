@@ -59,24 +59,13 @@ def t_impact(a):
 
 
 # ---- EVIDENCE tools (real service state; graceful if services aren't running) ----
-SERVICE_PORTS = {"checkout-api": 8101, "payment-service": 8102, "inventory-service": 8103, "auth-service": 8104}
-_SERVICE_ENV = {"checkout-api": "CHECKOUT_URL", "payment-service": "PAYMENT_URL",
-                "inventory-service": "INVENTORY_URL", "auth-service": "AUTH_URL"}
-
-
-def _service_base(svc):
-    """Base URL for a service — env override (Azure internal DNS) else local port. Matches server.py."""
-    import os
-    override = os.environ.get(_SERVICE_ENV.get(svc, ""))
-    if override:
-        return override.rstrip("/")
-    port = SERVICE_PORTS.get(svc)
-    return f"http://127.0.0.1:{port}" if port else None
+from shared.services import service_base as _service_base, canonical as _canonical  # noqa: E402
+# service naming + reachability come from shared/services.py (one source of truth)
 
 
 def t_service_health(a):
     import requests
-    svc = _svc(a.get("service_name", ""))
+    svc = _canonical(_svc(a.get("service_name", "")))    # e.g. 'auth' → 'auth-service'
     base = _service_base(svc)
     if not base:
         return json.dumps({"service": svc, "status": "unknown"})

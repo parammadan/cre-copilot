@@ -42,13 +42,5 @@ AZURE_APPINSIGHTS_NAME = os.environ.get("AZURE_APPINSIGHTS_NAME", "crecopilot-ai
 PORTAL_AGENT_NOVNC = os.environ.get("PORTAL_AGENT_NOVNC", "false").lower() == "true"
 PORTAL_CDP_URL = os.environ.get("PORTAL_CDP_URL", "http://localhost:9222")            # container Chromium (CDP)
 PORTAL_NOVNC_URL = os.environ.get("PORTAL_NOVNC_URL", "http://localhost:6080/vnc.html?autoconnect=1&resize=scale&reconnect=1")
-# topology/telemetry service name -> the real Container App name to open (our RG only).
-# The sandbox/dropdown uses short names (auth, inventory, frontend); the deployed apps are
-# <name>-service — this map bridges them so the portal deep-link points at an existing resource.
-PORTAL_SERVICE_APPS = {
-    "auth": "auth-service", "auth-service": "auth-service",
-    "inventory": "inventory-service", "inventory-service": "inventory-service",
-    "checkout-api": "checkout-api",
-    "payment-service": "payment-service",
-    "frontend": "checkout-api",     # frontend has no Container App → open its main consumer
-}
+# Service-name resolution (topology name → real Container App / microservice) now lives in
+# shared/services.py (canonical()), used by get_service_health, the Portal Agent, and remediation.

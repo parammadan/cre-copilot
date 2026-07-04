@@ -26,17 +26,19 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "functions"))
 try:
     from shared.settings import (AZURE_SUBSCRIPTION_ID, AZURE_TENANT_ID, AZURE_RESOURCE_GROUP,
-                                 PORTAL_USER_DATA_DIR, PORTAL_SERVICE_APPS, AZURE_APPINSIGHTS_NAME,
+                                 PORTAL_USER_DATA_DIR, AZURE_APPINSIGHTS_NAME,
                                  PORTAL_AGENT_NOVNC, PORTAL_CDP_URL)
+    from shared.services import canonical, REAL_SERVICES     # one source of truth for names
 except Exception:  # allow standalone use
     AZURE_SUBSCRIPTION_ID = os.environ.get("AZURE_SUBSCRIPTION_ID", "")
     AZURE_TENANT_ID = os.environ.get("AZURE_TENANT_ID", "")
     AZURE_RESOURCE_GROUP = os.environ.get("AZURE_RESOURCE_GROUP", "rg-cre-copilot")
     PORTAL_USER_DATA_DIR = os.environ.get("PORTAL_USER_DATA_DIR", os.path.expanduser("~/.cre-portal-profile"))
-    PORTAL_SERVICE_APPS = {}
     AZURE_APPINSIGHTS_NAME = os.environ.get("AZURE_APPINSIGHTS_NAME", "")
     PORTAL_AGENT_NOVNC = os.environ.get("PORTAL_AGENT_NOVNC", "false").lower() == "true"
     PORTAL_CDP_URL = os.environ.get("PORTAL_CDP_URL", "http://localhost:9222")
+    REAL_SERVICES = {"checkout-api", "payment-service", "inventory-service", "auth-service"}
+    def canonical(n): return {"auth": "auth-service", "inventory": "inventory-service"}.get((n or "").strip(), n)
 
 try:
     from shared import obs as _obs
@@ -107,7 +109,8 @@ class PortalSession:
     def __init__(self, event: str, service: str):
         self.event = (event or "generic").lower()
         self.service = service
-        self.app = PORTAL_SERVICE_APPS.get(service, service)
+        app = canonical(service)                              # e.g. 'auth' → 'auth-service'
+        self.app = app if app in REAL_SERVICES else "checkout-api"   # frontend/unknown → a real CA to display
         self.plan = _plan_for(self.event, self.app)
         self.idx = 0
         self.done = False
@@ -276,7 +279,7 @@ def investigate(service: str):
     """Sync generator of portal-agent events. Yields dicts:
        {type:'portal_status', status:...}  and  {type:'portal_evidence', message:...}.
     Read-only; safe to fail."""
-    app = PORTAL_SERVICE_APPS.get(service, service)
+    app = canonical(service) if canonical(service) in REAL_SERVICES else "checkout-api"
     yield _ev("portal_status", status="Opening browser")
     try:
         from playwright.sync_api import sync_playwright

@@ -214,18 +214,8 @@ async def incident_stream(request: Request) -> StreamingResponse:
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-_SERVICE_PORTS = {"checkout-api": 8101, "payment-service": 8102, "inventory-service": 8103, "auth-service": 8104}
-_SERVICE_ENV = {"checkout-api": "CHECKOUT_URL", "payment-service": "PAYMENT_URL",
-                "inventory-service": "INVENTORY_URL", "auth-service": "AUTH_URL"}
-
-
-def _service_base(service: str) -> str | None:
-    """Base URL for a microservice — env override (Azure internal DNS) else local port. Additive."""
-    override = os.environ.get(_SERVICE_ENV.get(service, ""))
-    if override:
-        return override.rstrip("/")
-    port = _SERVICE_PORTS.get(service)
-    return f"http://127.0.0.1:{port}" if port else None
+from shared.services import SERVICE_PORTS as _SERVICE_PORTS, service_base as _service_base  # noqa: E402
+# (name resolution + env-override + port live in shared/services.py — one source of truth)
 
 
 def _remediate_service(service: str, source: str = "console", approver: str = "human") -> list:
