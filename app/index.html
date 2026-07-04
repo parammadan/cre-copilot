@@ -6,11 +6,12 @@
 <title>CRE Copilot — Live Incident Console</title>
 <style>
   :root{
-    --surface:#1a1a19; --surface-2:#212120; --page:#0d0d0d;
-    --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781;
-    --grid:#2c2c2a; --baseline:#383835; --border:rgba(255,255,255,0.10);
-    --good:#0ca30c; --warning:#fab219; --serious:#ec835a; --critical:#d03b3b;
-    --blue:#3987e5; --aqua:#199e70;
+    /* palette matched to the React landing page (cool near-black + blue) */
+    --surface:#141417; --surface-2:#1b1b1f; --page:#0a0a0b;
+    --ink:#fafafa; --ink2:#b4b4bb; --muted:#8a8a93;
+    --grid:#26262b; --baseline:#33333a; --border:rgba(255,255,255,0.08);
+    --good:#22c55e; --warning:#e0a915; --serious:#ec835a; --critical:#ef4444;
+    --blue:#3b82f6; --aqua:#199e70;
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--page);color:var(--ink);
@@ -28,7 +29,7 @@
   .agent-chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
   .chip-agent{display:flex;align-items:center;gap:7px;padding:6px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2);font-size:12.5px;font-weight:600;color:var(--muted);transition:all .2s}
   .chip-agent .d{width:8px;height:8px;border-radius:50%;background:var(--muted)}
-  .chip-agent.active{color:var(--ink);border-color:var(--blue);box-shadow:0 0 0 2px rgba(57,135,229,.25)}
+  .chip-agent.active{color:var(--ink);border-color:var(--blue);box-shadow:0 0 0 2px rgba(59,130,246,.25)}
   .chip-agent.active .d{background:var(--blue);animation:pulse2 1s infinite}
   .chip-agent.done{color:var(--ink2)} .chip-agent.done .d{background:var(--good)}
   @keyframes pulse2{0%,100%{opacity:1}50%{opacity:.25}}
@@ -36,7 +37,7 @@
   .turn{border-left:2px solid var(--blue);padding:1px 0 1px 12px}
   .turn .who{font-size:12px;font-weight:700;color:var(--blue);margin-bottom:4px}
   .turn .tools{display:flex;gap:6px;flex-wrap:wrap;margin:2px 0}
-  .tooltag{font-size:10.5px;background:rgba(57,135,229,.15);color:var(--blue);padding:1px 7px;border-radius:999px;font-family:ui-monospace,monospace}
+  .tooltag{font-size:10.5px;background:rgba(59,130,246,.15);color:var(--blue);padding:1px 7px;border-radius:999px;font-family:ui-monospace,monospace}
   .turn .body{font-size:13px;color:var(--ink2);white-space:pre-wrap}
   /* ---- operations center (agents as live workers, not a chat) ---- */
   .opscenter{display:grid;grid-template-columns:1.05fr .95fr;gap:14px;margin-top:6px}
@@ -53,7 +54,7 @@
   .worker .wbar i{display:block;height:100%;width:0;background:var(--blue);transition:width .35s}
   .worker .wterm{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:1.55;color:var(--ink2);max-height:0;overflow:hidden;transition:max-height .3s}
   .worker .wterm .cmd{color:var(--blue)} .worker .wterm .res{color:var(--muted)}
-  .worker[data-state="working"]{border-color:var(--blue);box-shadow:0 0 0 2px rgba(57,135,229,.14)}
+  .worker[data-state="working"]{border-color:var(--blue);box-shadow:0 0 0 2px rgba(59,130,246,.14)}
   .worker[data-state="working"] .wdot{background:var(--blue);animation:pulse2 1s infinite}
   .worker[data-state="working"] .wstat{color:var(--blue)}
   .worker[data-state="working"] .wbar i{width:100%;animation:wshimmer 1.1s ease-in-out infinite}
