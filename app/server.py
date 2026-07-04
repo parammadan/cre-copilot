@@ -480,11 +480,23 @@ async def verify_ep(req: Request) -> JSONResponse:
         return JSONResponse({"verdict": "Verifier error: " + str(e)[:160]})
 
 
+@app.get("/api/teams/config")
+def teams_config() -> JSONResponse:
+    """Report whether Teams is really configured — so the UI can disable the button honestly
+    (no secret is exposed, only booleans)."""
+    from shared.settings import TEAMS_WEBHOOK_URL, PUBLIC_BASE_URL
+    local = PUBLIC_BASE_URL.startswith("http://localhost") or PUBLIC_BASE_URL.startswith("http://127.")
+    return JSONResponse({"configured": bool(TEAMS_WEBHOOK_URL),
+                         "approve_callback_public": bool(TEAMS_WEBHOOK_URL) and not local})
+
+
 @app.post("/api/teams/notify")
 async def teams_notify() -> JSONResponse:
     """Post an Adaptive Card for the current top incident to the Teams channel webhook."""
     from shared import teams
     from shared.settings import TEAMS_WEBHOOK_URL, PUBLIC_BASE_URL
+    if not TEAMS_WEBHOOK_URL:
+        return JSONResponse({"posted": False, "reason": "Teams integration not configured"})
     al = kusto.query_safe("let amax=toscalar(Alerts|summarize max(Timestamp)); "
                           "Alerts|where Timestamp>amax-60m|top 1 by Severity asc|project Service,Timestamp,Severity")
     if al.empty:

@@ -836,11 +836,27 @@ async function cpSend(){
     const d=await r.json(); CP_THREAD=d.thread_id||CP_THREAD; think.style.opacity=1; think.textContent=d.answer||'(no answer)';
   }catch(e){ think.textContent='error: '+e; }
 }
+let _teamsConfigured=false;
+(async function teamsInit(){
+  const b=document.getElementById('teamsBtn');
+  try{
+    const c=await (await fetch('/api/teams/config')).json();
+    _teamsConfigured=!!c.configured;
+    if(!_teamsConfigured){
+      b.disabled=true; b.textContent="📣 Teams — not configured"; b.style.opacity=.55;
+      b.title="Teams integration not configured — set TEAMS_WEBHOOK_URL to enable";
+    }else if(!c.approve_callback_public){
+      b.title="Configured. Note: the card's Approve button needs a public PUBLIC_BASE_URL (App Service / devtunnel) to call back.";
+    }
+  }catch(e){ /* leave enabled; click handler reports honestly */ }
+})();
 document.getElementById('teamsBtn').addEventListener('click',async e=>{
-  const b=e.target; b.disabled=true; b.textContent="📣 posting…";
+  const b=e.target;
+  if(!_teamsConfigured){ document.getElementById('statusText').textContent="Teams integration not configured — set TEAMS_WEBHOOK_URL"; return; }
+  b.disabled=true; b.textContent="📣 posting…";
   try{ const r=await fetch('/api/teams/notify',{method:'POST'}); const d=await r.json();
     document.getElementById('statusText').textContent = d.posted ? "posted incident card to Teams ✓"
-      : ("Teams: "+(d.reason||"webhook not set")+" (set TEAMS_WEBHOOK_URL)"); }
+      : ("Teams: "+(d.reason||"not configured")); }
   catch(err){ document.getElementById('statusText').textContent="Teams post failed"; }
   b.disabled=false; b.textContent="📣 Post to Teams";
 });
