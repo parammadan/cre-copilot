@@ -170,6 +170,17 @@ async def incident_stream(request: Request) -> StreamingResponse:
 
 
 _SERVICE_PORTS = {"checkout-api": 8101, "payment-service": 8102, "inventory-service": 8103, "auth-service": 8104}
+_SERVICE_ENV = {"checkout-api": "CHECKOUT_URL", "payment-service": "PAYMENT_URL",
+                "inventory-service": "INVENTORY_URL", "auth-service": "AUTH_URL"}
+
+
+def _service_base(service: str) -> str | None:
+    """Base URL for a microservice — env override (Azure internal DNS) else local port. Additive."""
+    override = os.environ.get(_SERVICE_ENV.get(service, ""))
+    if override:
+        return override.rstrip("/")
+    port = _SERVICE_PORTS.get(service)
+    return f"http://127.0.0.1:{port}" if port else None
 
 
 def _remediate_service(service: str) -> list:
@@ -179,10 +190,10 @@ def _remediate_service(service: str) -> list:
     service = "".join(c for c in str(service) if c.isalnum() or c in "-_")
     if not service:
         return []
-    port = _SERVICE_PORTS.get(service)
-    if port:  # real action on the real service (best-effort)
+    base = _service_base(service)
+    if base:  # real action on the real service (best-effort)
         try:
-            requests.post(f"http://127.0.0.1:{port}/recover", timeout=1.5)
+            requests.post(f"{base}/recover", timeout=1.5)
             from shared.obs import log
             log("remediation.recover_called", service=service)
         except Exception:
@@ -433,10 +444,10 @@ def _check_collector() -> dict:
 def _check_services() -> list:
     """Real /health probe of every microservice, timed. Unreachable -> offline (honest)."""
     out = []
-    for svc, port in _SERVICE_PORTS.items():
+    for svc in _SERVICE_PORTS:
         t0 = time.perf_counter()
         try:
-            j = requests.get(f"http://127.0.0.1:{port}/health", timeout=1.0).json()
+            j = requests.get(f"{_service_base(svc)}/health", timeout=1.0).json()
             out.append({"service": svc, "status": str(j.get("status", "unknown")).lower(),
                         "response_ms": round((time.perf_counter() - t0) * 1000), "checked": time.strftime("%H:%M:%S")})
         except Exception:

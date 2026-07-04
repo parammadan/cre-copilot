@@ -28,11 +28,11 @@ from shared import kusto  # noqa: E402
 
 SOURCE = os.environ.get("TELEMETRY_SOURCE", "synthetic")
 INTERVAL = int(os.environ.get("COLLECTOR_INTERVAL_SEC", "12"))
-SERVICES = {
-    "checkout-api":      "http://127.0.0.1:8101",
-    "payment-service":   "http://127.0.0.1:8102",
-    "inventory-service": "http://127.0.0.1:8103",
-    "auth-service":      "http://127.0.0.1:8104",
+SERVICES = {  # env-driven: localhost for local dev, internal DNS in Azure Container Apps
+    "checkout-api":      os.environ.get("CHECKOUT_URL",  "http://127.0.0.1:8101"),
+    "payment-service":   os.environ.get("PAYMENT_URL",   "http://127.0.0.1:8102"),
+    "inventory-service": os.environ.get("INVENTORY_URL", "http://127.0.0.1:8103"),
+    "auth-service":      os.environ.get("AUTH_URL",      "http://127.0.0.1:8104"),
 }
 _seen_logs: set = set()
 
