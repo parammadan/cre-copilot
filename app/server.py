@@ -12,8 +12,10 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import requests
 import sys
 import time
+from datetime import datetime
 
 import pandas as pd
 from fastapi import FastAPI, Request
@@ -167,12 +169,24 @@ async def incident_stream(request: Request) -> StreamingResponse:
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+_SERVICE_PORTS = {"checkout-api": 8101, "payment-service": 8102, "inventory-service": 8103, "auth-service": 8104}
+
+
 def _remediate_service(service: str) -> list:
-    """Shared remediation: write recovery telemetry (baseline, forward) for the service +
-    its downstream victims so the dashboard heals RED->GREEN. Used by the console AND Teams."""
+    """Shared remediation. REAL action first: POST /recover to the actual service (if the
+    local lab is running); ALSO write recovery telemetry so the ADX-based health view heals
+    even without the services (fallback). Used by the console AND Teams."""
     service = "".join(c for c in str(service) if c.isalnum() or c in "-_")
     if not service:
         return []
+    port = _SERVICE_PORTS.get(service)
+    if port:  # real action on the real service (best-effort)
+        try:
+            requests.post(f"http://127.0.0.1:{port}/recover", timeout=1.5)
+            from shared.obs import log
+            log("remediation.recover_called", service=service)
+        except Exception:
+            pass
     deps = kusto.query(f"ServiceDependencies | where DependsOn=='{service}' | project Service")
     healed = [service] + deps["Service"].tolist()
     healed_kql = "dynamic([" + ",".join(f"'{s}'" for s in healed) + "])"
@@ -359,6 +373,111 @@ async def postmortem_ep(req: Request) -> JSONResponse:
         return JSONResponse({"review": review})
     except Exception as e:
         return JSONResponse({"review": "Postmortem error: " + str(e)[:160]})
+
+
+def _check_adx() -> dict:
+    """Real ADX health: a lightweight `print` query, timed. No table scan."""
+    from shared import settings as _s
+    host = _s.ADX_CLUSTER_URI.split("//")[-1].split(".")[0]
+    t0 = time.perf_counter()
+    try:
+        kusto.query("print ping=1")
+        return {"name": "Azure Data Explorer", "connected": True,
+                "latency_ms": round((time.perf_counter() - t0) * 1000),
+                "cluster": host, "database": _s.ADX_DATABASE, "last_query": time.strftime("%H:%M:%S")}
+    except Exception as e:
+        return {"name": "Azure Data Explorer", "connected": False, "cluster": host, "error": str(e)[:140]}
+
+
+def _check_aoai() -> dict:
+    """Real Azure OpenAI reachability: a cheap models list (GET). No completion is generated."""
+    from shared import settings as _s
+    ep = _s.AOAI_ENDPOINT.split("//")[-1].rstrip("/")
+    t0 = time.perf_counter()
+    try:
+        from agents.assistants import client
+        client.models.list()  # inexpensive metadata GET — does NOT create a completion
+        return {"name": "Azure OpenAI", "connected": True,
+                "latency_ms": round((time.perf_counter() - t0) * 1000),
+                "deployment": _s.AOAI_DEPLOYMENT, "endpoint": ep, "last_request": time.strftime("%H:%M:%S")}
+    except Exception as e:
+        return {"name": "Azure OpenAI", "connected": False, "deployment": _s.AOAI_DEPLOYMENT, "error": str(e)[:140]}
+
+
+def _check_collector() -> dict:
+    """Is the collector process live, and how fresh is the telemetry it writes?"""
+    interval = int(os.environ.get("COLLECTOR_INTERVAL_SEC", "12"))
+    source = os.environ.get("TELEMETRY_SOURCE", "synthetic")
+    running = False
+    try:
+        r = subprocess.run(["pgrep", "-f", "collector.py"], capture_output=True, text=True, timeout=2)
+        running = bool(r.stdout.strip())
+    except Exception:
+        pass
+    last_sync, age = None, None
+    try:
+        df = kusto.query("Telemetry | summarize m=max(Timestamp)")
+        if df is not None and len(df) and df.iloc[0, 0] is not None:
+            lt = pd.Timestamp(df.iloc[0, 0])
+            lt = lt.tz_localize("UTC") if lt.tzinfo is None else lt
+            age = max(0, round((pd.Timestamp.now(tz="UTC") - lt).total_seconds()))  # clamp: synthetic data can be forward-dated
+            local_tz = datetime.now().astimezone().tzinfo
+            last_sync = lt.tz_convert(local_tz).strftime("%H:%M:%S")  # local time, consistent with other checks
+    except Exception:
+        pass
+    return {"name": "Telemetry Collector", "running": running, "source": source,
+            "poll_interval_sec": interval, "monitored_services": len(_SERVICE_PORTS),
+            "last_sync": last_sync, "last_sync_age_sec": age}
+
+
+def _check_services() -> list:
+    """Real /health probe of every microservice, timed. Unreachable -> offline (honest)."""
+    out = []
+    for svc, port in _SERVICE_PORTS.items():
+        t0 = time.perf_counter()
+        try:
+            j = requests.get(f"http://127.0.0.1:{port}/health", timeout=1.0).json()
+            out.append({"service": svc, "status": str(j.get("status", "unknown")).lower(),
+                        "response_ms": round((time.perf_counter() - t0) * 1000), "checked": time.strftime("%H:%M:%S")})
+        except Exception:
+            out.append({"service": svc, "status": "offline", "response_ms": None, "checked": time.strftime("%H:%M:%S")})
+    return out
+
+
+@app.get("/api/workspace/status")
+async def workspace_status() -> JSONResponse:
+    """Live, backend-driven workspace health — every value comes from a real check (no placeholders)."""
+    from fastapi.concurrency import run_in_threadpool
+    adx = await run_in_threadpool(_check_adx)
+    aoai = await run_in_threadpool(_check_aoai)
+    collector = await run_in_threadpool(_check_collector)
+    services = await run_in_threadpool(_check_services)
+    core_ok = bool(adx.get("connected") and aoai.get("connected"))
+    states = [s["status"] for s in services]
+    all_healthy = bool(states) and all(s == "healthy" for s in states)
+    if not core_ok:
+        overall = "OFFLINE"          # can't operate without ADX + Azure OpenAI
+    elif all_healthy:
+        overall = "READY"
+    else:
+        overall = "DEGRADED"          # core up, but a service/collector is not fully healthy
+    return JSONResponse({"overall": overall, "adx": adx, "aoai": aoai,
+                         "collector": collector, "services": services, "checked": time.strftime("%H:%M:%S")})
+
+
+@app.post("/api/verify")
+async def verify_ep(req: Request) -> JSONResponse:
+    """Verifier agent — independently confirm recovery (real /health + logs) after remediation."""
+    from fastapi.concurrency import run_in_threadpool
+    from agents.assistants import verify
+    service = str((await req.json()).get("service", "")).strip()
+    if not service:
+        return JSONResponse({"error": "no service"}, status_code=400)
+    try:
+        verdict = await run_in_threadpool(verify, service)
+        return JSONResponse({"verdict": verdict})
+    except Exception as e:
+        return JSONResponse({"verdict": "Verifier error: " + str(e)[:160]})
 
 
 @app.post("/api/teams/notify")
