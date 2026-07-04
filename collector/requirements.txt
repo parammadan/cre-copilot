@@ -1,0 +1,4 @@
+requests>=2.31
+pandas>=2.0
+azure-identity>=1.16.0
+azure-kusto-data>=4.5.1

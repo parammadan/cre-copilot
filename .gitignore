@@ -13,3 +13,4 @@ dashboard/*.pbix
 .DS_Store
 /tmp/
 demo/.env
+infra/*.json

@@ -1,0 +1,13 @@
+**/.venv/
+**/__pycache__/
+*.pyc
+.git/
+.gitignore
+demo/.env
+.env
+**/*.local.settings.json
+docs/
+eval/
+dashboard/
+.DS_Store
+/tmp/
