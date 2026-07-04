@@ -62,8 +62,11 @@ def _react_html() -> str:
 
 
 @app.get("/legacy", response_class=HTMLResponse)
+@app.get("/console", response_class=HTMLResponse)
 def legacy_console() -> str:
-    """The original vanilla console — ALWAYS available, regardless of FRONTEND_MODE."""
+    """The full operations console (topology, sandbox, agents, chat, Teams, workspace +
+    security cards). Served at both /console and /legacy, ALWAYS, regardless of FRONTEND_MODE.
+    The React landing's 'Launch Workspace' opens this."""
     return _legacy_html()
 
 
