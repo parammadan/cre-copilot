@@ -503,11 +503,11 @@ def teams_config() -> JSONResponse:
 
 @app.post("/api/teams/notify")
 async def teams_notify() -> JSONResponse:
-    """Post an Adaptive Card for the current top incident to the Teams channel webhook."""
+    """Build the incident Adaptive Card from live data and post it to the Teams channel webhook.
+    If no webhook is configured, return the card as a PREVIEW (honest: nothing was posted) so the
+    exact card CRE Copilot generates can still be shown."""
     from shared import teams
     from shared.settings import TEAMS_WEBHOOK_URL, PUBLIC_BASE_URL
-    if not TEAMS_WEBHOOK_URL:
-        return JSONResponse({"posted": False, "reason": "Teams integration not configured"})
     al = kusto.query_safe("let amax=toscalar(Alerts|summarize max(Timestamp)); "
                           "Alerts|where Timestamp>amax-60m|top 1 by Severity asc|project Service,Timestamp,Severity")
     if al.empty:
@@ -522,6 +522,8 @@ async def teams_notify() -> JSONResponse:
            "rootCause": {"service": top.Service, "version": top.Version, "confidence": float(top.confidence)},
            "impact": _records(kusto.query_safe(f"ImpactAssessment('{top.Service}')"))}
     card = teams.build_incident_card(inc, f"{PUBLIC_BASE_URL}/api/teams/approve", PUBLIC_BASE_URL)
+    if not TEAMS_WEBHOOK_URL:
+        return JSONResponse({"posted": False, "reason": "Teams integration not configured", "preview": card})
     return JSONResponse(teams.post_card(TEAMS_WEBHOOK_URL, card))
 
 

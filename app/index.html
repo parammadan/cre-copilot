@@ -843,22 +843,57 @@ let _teamsConfigured=false;
     const c=await (await fetch('/api/teams/config')).json();
     _teamsConfigured=!!c.configured;
     if(!_teamsConfigured){
-      b.disabled=true; b.textContent="📣 Teams — not configured"; b.style.opacity=.55;
-      b.title="Teams integration not configured — set TEAMS_WEBHOOK_URL to enable";
+      b.textContent="📣 Preview Teams card";
+      b.title="Webhook not configured — shows the exact Adaptive Card CRE Copilot would post to a Teams channel.";
     }else if(!c.approve_callback_public){
       b.title="Configured. Note: the card's Approve button needs a public PUBLIC_BASE_URL (App Service / devtunnel) to call back.";
     }
   }catch(e){ /* leave enabled; click handler reports honestly */ }
 })();
+/* faithful HTML render of the real Adaptive Card JSON (honest — same content Teams gets) */
+function renderTeamsCard(payload, isPreview){
+  const c=(payload&&payload.attachments&&payload.attachments[0]&&payload.attachments[0].content)||{};
+  const colorMap={Attention:'#d13438',Warning:'#e0a915',Good:'#22a447',Accent:'#5b5fc7'};
+  const body=(c.body||[]).map(el=>{
+    if(el.type==='TextBlock'){
+      const sz=el.size==='Large'?'17px':(el.size==='Medium'?'15px':'13px');
+      const col=el.color?colorMap[el.color]||'#242424':(el.isSubtle?'#616161':'#242424');
+      return `<div style="font-size:${sz};font-weight:${el.weight==='Bolder'?700:400};color:${col};margin:2px 0;${el.wrap?'':'white-space:nowrap'}">${hesc(el.text||'')}</div>`;
+    }
+    if(el.type==='FactSet'){
+      return '<table style="margin:8px 0;border-collapse:collapse">'+(el.facts||[]).map(f=>
+        `<tr><td style="color:#616161;font-size:12.5px;padding:2px 16px 2px 0;vertical-align:top">${hesc(f.title)}</td><td style="color:#242424;font-size:12.5px;font-weight:600;padding:2px 0">${hesc(f.value)}</td></tr>`).join('')+'</table>';
+    }
+    return '';
+  }).join('');
+  const actions=(c.actions||[]).map(a=>
+    `<span style="display:inline-block;background:#5b5fc7;color:#fff;font-size:12.5px;font-weight:600;padding:7px 14px;border-radius:5px;margin:2px 8px 2px 0">${hesc(a.title)}</span>`).join('');
+  const banner=isPreview
+    ? `<div style="background:#fff4ce;border:1px solid #e0c56b;color:#6b5900;font-size:11.5px;padding:6px 10px;border-radius:6px;margin-bottom:10px">⚠️ Preview — Teams webhook not configured in this demo. This is the exact Adaptive Card CRE Copilot posts to a channel in production; nothing was sent.</div>`
+    : `<div style="background:#dff6dd;border:1px solid #9fd89f;color:#0a5a15;font-size:11.5px;padding:6px 10px;border-radius:6px;margin-bottom:10px">✅ Posted to your Teams channel.</div>`;
+  const html=`<div id="tcMask" style="position:fixed;inset:0;background:rgba(6,8,15,.72);z-index:9998;display:flex;align-items:center;justify-content:center;padding:24px" onclick="if(event.target.id==='tcMask')this.remove()">
+    <div style="max-width:520px;width:100%">
+      ${banner}
+      <div style="background:#f5f5f5;border-radius:10px;padding:2px;box-shadow:0 12px 40px rgba(0,0,0,.4)">
+        <div style="background:#fff;border-radius:9px;padding:18px 20px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><span style="width:26px;height:26px;border-radius:6px;background:#5b5fc7;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:13px;font-weight:700">T</span><span style="color:#616161;font-size:12px;font-weight:600">Microsoft Teams · Adaptive Card</span></div>
+          ${body}
+          <div style="margin-top:12px">${actions}</div>
+        </div>
+      </div>
+      <div style="text-align:center;margin-top:12px"><span style="color:#c7ccd8;font-size:12px;cursor:pointer" onclick="document.getElementById('tcMask').remove()">close ✕</span></div>
+    </div>
+  </div>`;
+  const wrap=document.createElement('div'); wrap.innerHTML=html; document.body.appendChild(wrap.firstElementChild);
+}
 document.getElementById('teamsBtn').addEventListener('click',async e=>{
-  const b=e.target;
-  if(!_teamsConfigured){ document.getElementById('statusText').textContent="Teams integration not configured — set TEAMS_WEBHOOK_URL"; return; }
-  b.disabled=true; b.textContent="📣 posting…";
+  const b=e.target; const orig=b.textContent; b.disabled=true; b.textContent="📣 building card…";
   try{ const r=await fetch('/api/teams/notify',{method:'POST'}); const d=await r.json();
-    document.getElementById('statusText').textContent = d.posted ? "posted incident card to Teams ✓"
-      : ("Teams: "+(d.reason||"not configured")); }
-  catch(err){ document.getElementById('statusText').textContent="Teams post failed"; }
-  b.disabled=false; b.textContent="📣 Post to Teams";
+    if(d.preview){ renderTeamsCard(d.preview, true); document.getElementById('statusText').textContent="Teams card preview (webhook not configured)"; }
+    else if(d.posted){ document.getElementById('statusText').textContent="posted incident card to Teams ✓"; }
+    else{ document.getElementById('statusText').textContent="Teams: "+(d.reason||"nothing to post — run an incident first"); }
+  }catch(err){ document.getElementById('statusText').textContent="Teams request failed"; }
+  b.disabled=false; b.textContent=orig;
 });
 document.getElementById('askBtn').addEventListener('click',cpToggle);
 document.getElementById('cpClose').addEventListener('click',cpToggle);
