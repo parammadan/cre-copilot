@@ -12,3 +12,4 @@ data/.env
 dashboard/*.pbix
 .DS_Store
 /tmp/
+demo/.env
