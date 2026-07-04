@@ -35,6 +35,7 @@ AZURE_SUBSCRIPTION_ID = os.environ.get("AZURE_SUBSCRIPTION_ID", "c1ae007a-d508-4
 AZURE_TENANT_ID = os.environ.get("AZURE_TENANT_ID", "54fc64b7-f5a8-41cf-a1f2-ba13b2831628")
 AZURE_RESOURCE_GROUP = os.environ.get("AZURE_RESOURCE_GROUP", "rg-cre-copilot")
 PORTAL_USER_DATA_DIR = os.environ.get("PORTAL_USER_DATA_DIR", os.path.expanduser("~/.cre-portal-profile"))
+AZURE_APPINSIGHTS_NAME = os.environ.get("AZURE_APPINSIGHTS_NAME", "crecopilot-ai-vxxmsm")  # for the Failures/Exceptions blades
 # incident service -> the Container App name to open (our RG only)
 PORTAL_SERVICE_APPS = {
     "checkout-api": "checkout-api", "payment-service": "payment-service",

@@ -818,7 +818,7 @@ function runIncident(onDone){
   const tok={};                                    // buffer per-agent prose → one conclusion line
   es.onmessage=e=>{ const ev=JSON.parse(e.data);
     if(ev.type==='incident_start'){ _TRACE=ev.trace||null; updateRuntime(); tl('Investigation started'+(ev.mode?(' · '+ev.mode+' mode'):''),'start'); }
-    else if(ev.type==='agent_start'){ startWorker(ev.agent); tl(hesc(ev.agent)+' started'); }
+    else if(ev.type==='agent_start'){ startWorker(ev.agent); tl(hesc(ev.agent)+' started'); portalAdvance(ev.agent); }
     else if(ev.type==='token'){ tok[ev.agent]=(tok[ev.agent]||'')+ev.text; }
     else if(ev.type==='tool_call'){ const o=ownerFor(ev.tool,ev.agent); setWorker(o,'calling','Calling '+ev.tool+'()'); workerLine(o,ev.tool+'()'); tl('<b>'+hesc(ev.agent)+'</b> → '+hesc(ev.tool)+'()','tool'); }
     else if(ev.type==='evidence'){ const o=ownerFor(ev.tool,ev.agent); setWorker(o,'thinking','Analyzing result'); workerLine(o,undefined,ev.summary); evLine(ev.tool,ev.summary); tl(hesc(ev.tool)+' → '+hesc(ev.summary),'evidence'); }
@@ -831,13 +831,15 @@ function runIncident(onDone){
 
 /* ---------- Portal Agent (headed Chromium, read-only Azure Portal; local-only, flag-gated) ---------- */
 window._portalEnabled=false;
-const PORTAL_STATE_MAP={'Opening browser':'thinking','Navigating':'calling','Inspecting':'calling','Evidence captured':'thinking','Complete':'done','Failed':'failed','disabled':'idle'};
+const PORTAL_STATE_MAP={'Opening browser':'thinking','Navigating':'calling','Inspecting':'calling','Evidence captured':'thinking','Complete':'done','Failed':'failed','disabled':'idle','Idle':'idle'};
+window._lastSimEvent='generic';   // set by sandbox controls → drives contextual portal navigation
 fetch('/api/portal-agent/config').then(r=>r.json()).then(d=>{ window._portalEnabled=!!d.enabled; if(window._portalEnabled) renderChips(true); }).catch(()=>{});
-function runPortalAgent(service){
+async function runPortalAgent(service){
   if(!window._portalEnabled) return;
   if(!document.getElementById('w-Portal')) renderChips(true);
-  setWorker('Portal','thinking','Opening browser'); tl('Portal Agent starting (headed Chromium, read-only)','tool');
-  const es=new EventSource('/api/portal-agent/stream?service='+encodeURIComponent(service||''));
+  setWorker('Portal','thinking','Opening browser'); tl('Portal Agent starting · focus: '+(window._lastSimEvent||'generic'),'tool');
+  try{ await fetch('/api/portal-agent/session/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event:(window._lastSimEvent||'generic'), service:service||''})}); }catch(e){}
+  const es=new EventSource('/api/portal-agent/stream'); window._portalES=es;
   es.onmessage=e=>{ const ev=JSON.parse(e.data);
     if(ev.type==='portal_status'){ setWorker('Portal', PORTAL_STATE_MAP[ev.status]||'thinking', ev.status); tl('Portal Agent: '+hesc(ev.status),'tool'); }
     else if(ev.type==='portal_evidence'){ evLine('portal', ev.message); tl(hesc(ev.message),'evidence'); }
@@ -845,6 +847,9 @@ function runPortalAgent(service){
   };
   es.onerror=()=>{ es.close(); };
 }
+/* stage-driven: each investigation stage nudges the browser to the next contextual page */
+function portalAdvance(stage){ if(!window._portalEnabled) return; fetch('/api/portal-agent/session/advance',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({stage})}).catch(()=>{}); }
+function portalStop(){ if(!window._portalEnabled) return; fetch('/api/portal-agent/session/stop',{method:'POST'}).catch(()=>{}); }
 
 /* ---------- automatic Teams escalation (backend decides via the gate; LLM never posts) ---------- */
 async function autoEscalate(){
@@ -957,12 +962,12 @@ async function simPost(url, body, label){
   document.getElementById('statusText').textContent="live · "+STATE.incidents.length+" active incident(s) · sandbox changed — hit ▶ Run";
 }
 document.getElementById('traffic').addEventListener('input',e=>document.getElementById('trafVal').textContent=(+e.target.value).toFixed(1)+'×');
-document.getElementById('traffic').addEventListener('change',e=>simPost('/api/sim/traffic',{value:+e.target.value},'traffic '+(+e.target.value).toFixed(1)+'×'));
+document.getElementById('traffic').addEventListener('change',e=>{window._lastSimEvent='traffic';simPost('/api/sim/traffic',{value:+e.target.value},'traffic '+(+e.target.value).toFixed(1)+'×');});
 document.getElementById('noise').addEventListener('input',e=>document.getElementById('noiseVal').textContent=(+e.target.value).toFixed(1)+'×');
 document.getElementById('noise').addEventListener('change',e=>simPost('/api/sim/noise',{value:+e.target.value},'noise '+(+e.target.value).toFixed(1)+'×'));
-document.getElementById('badDeployBtn').addEventListener('click',()=>simPost('/api/sim/deploy',{service:document.getElementById('simsvc').value},'bad deploy → '+document.getElementById('simsvc').value));
-document.getElementById('injErrBtn').addEventListener('click',()=>simPost('/api/sim/errors',{service:document.getElementById('simsvc').value,value:8},'errors → '+document.getElementById('simsvc').value));
-document.getElementById('killBtn').addEventListener('click',()=>simPost('/api/sim/kill',{service:document.getElementById('simsvc').value},'kill → '+document.getElementById('simsvc').value));
+document.getElementById('badDeployBtn').addEventListener('click',()=>{window._lastSimEvent='bad_deploy';simPost('/api/sim/deploy',{service:document.getElementById('simsvc').value},'bad deploy → '+document.getElementById('simsvc').value);});
+document.getElementById('injErrBtn').addEventListener('click',()=>{window._lastSimEvent='errors';simPost('/api/sim/errors',{service:document.getElementById('simsvc').value,value:8},'errors → '+document.getElementById('simsvc').value);});
+document.getElementById('killBtn').addEventListener('click',()=>{window._lastSimEvent='kill';simPost('/api/sim/kill',{service:document.getElementById('simsvc').value},'kill → '+document.getElementById('simsvc').value);});
 document.getElementById('sandReset').addEventListener('click',()=>simPost('/api/sim/reset',{},'reset sandbox'));
 
 /* ---------- Ask CRE Copilot ---------- */
@@ -1112,6 +1117,7 @@ async function approve(service, alertService, btn){
   // Verifier agent runs AFTER remediation: independently confirms recovery from real /health + logs
   setWorker('Verifier','calling','Calling verify()'); workerLine('Verifier','verify('+service+')');
   tl('Verifier checking real /health + logs (POST /api/verify)','remediate');
+  portalAdvance('Verifier');   // Portal Agent refreshes the Health page while the Verifier checks
   const vnote=document.createElement('div'); vnote.className='cf'; vnote.style.marginTop='10px';
   vnote.textContent='🔎 Verifier independently confirming recovery…'; card.appendChild(vnote);
   try{
@@ -1122,6 +1128,7 @@ async function approve(service, alertService, btn){
     setWorker('Verifier', ok?'done':'waiting'); vnote.textContent='🔎 '+vd;
     tl((ok?'✓ Recovery confirmed — ':'⚠ Recovery NOT confirmed — ')+hesc(vd), ok?'done':'error');
   }catch(e){ setWorker('Verifier','waiting'); vnote.textContent='🔎 verification failed'; tl('⚠ verification failed','error'); }
+  portalStop();   // investigation complete → Portal Agent lingers briefly, then closes the browser
   // Postmortem agent runs AFTER verification: writes the review + authors a runbook if novel
   const note=document.createElement('div'); note.className='cf'; note.style.marginTop='10px';
   note.textContent='📝 Postmortem agent writing the review…'; card.appendChild(note);
@@ -1135,6 +1142,7 @@ async function approve(service, alertService, btn){
   }catch(e){ note.textContent='📝 postmortem failed'; }
 }
 async function breakService(svc){
+  window._lastSimEvent='kill';
   document.getElementById('statusText').textContent="💥 injecting failure into "+svc+"…";
   await fetch('/api/break',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({service:svc})});
   await load();          // topology reloads -> the service you clicked goes RED

@@ -848,15 +848,62 @@ def portal_agent_config() -> JSONResponse:
     return JSONResponse({"enabled": bool(AZURE_PORTAL_AGENT_ENABLED)})
 
 
+def _portal():
+    """Import the portal_agent module (repo root on path)."""
+    sys.path.insert(0, os.path.abspath(os.path.join(HERE, "..")))
+    from portal_agent import portal_agent as pa
+    return pa
+
+
+@app.post("/api/portal-agent/session/start")
+async def portal_agent_start(req: Request) -> JSONResponse:
+    """Start an event-aware Portal Agent session (opens the headed browser). Flag-gated, local-only."""
+    from shared.settings import AZURE_PORTAL_AGENT_ENABLED
+    if not AZURE_PORTAL_AGENT_ENABLED:
+        return JSONResponse({"ok": False, "reason": "disabled"})
+    b = await req.json()
+    event = str(b.get("event", "generic"))
+    service = "".join(c for c in str(b.get("service", "")) if c.isalnum() or c in "-_")
+    try:
+        _portal().start_session(event, service)
+        return JSONResponse({"ok": True, "event": event, "service": service})
+    except Exception as e:
+        return JSONResponse({"ok": False, "reason": str(e)[:140]})
+
+
+@app.post("/api/portal-agent/session/advance")
+async def portal_agent_advance(req: Request) -> JSONResponse:
+    """Advance the session to the next contextual page for the given investigation stage."""
+    stage = str((await req.json()).get("stage", ""))
+    try:
+        s = _portal().session()
+        if s and not s.done:
+            s.advance(stage)
+            return JSONResponse({"ok": True})
+    except Exception:
+        pass
+    return JSONResponse({"ok": False})
+
+
+@app.post("/api/portal-agent/session/stop")
+async def portal_agent_stop() -> JSONResponse:
+    """Finish the session (linger briefly, then close the browser)."""
+    try:
+        s = _portal().session()
+        if s and not s.done:
+            s.stop()
+    except Exception:
+        pass
+    return JSONResponse({"ok": True})
+
+
 @app.get("/api/portal-agent/stream")
-async def portal_agent_stream(service: str = "") -> StreamingResponse:
-    """Stream the headed, read-only Portal Agent as it navigates our resources in the Azure Portal.
-    Runs in a worker thread (sync Playwright) bridged to SSE — mirrors the incident stream. If the
-    feature flag is off or Playwright fails, it emits a status and ends; the main flow is unaffected."""
+async def portal_agent_stream() -> StreamingResponse:
+    """Stream the active Portal Agent session's events (status/evidence) to the console. Bridges the
+    session's thread queue to SSE. If the flag is off / no session, emits a status and ends."""
     import asyncio
     import threading
     from shared.settings import AZURE_PORTAL_AGENT_ENABLED
-    svc = "".join(c for c in str(service) if c.isalnum() or c in "-_")
 
     async def _one(events):
         for e in events:
@@ -865,24 +912,22 @@ async def portal_agent_stream(service: str = "") -> StreamingResponse:
     if not AZURE_PORTAL_AGENT_ENABLED:
         return StreamingResponse(_one([{"type": "portal_status", "status": "disabled"}, {"type": "done"}]),
                                  media_type="text/event-stream")
+    s = _portal().session()
+    if s is None:
+        return StreamingResponse(_one([{"type": "portal_status", "status": "Idle"}, {"type": "done"}]),
+                                 media_type="text/event-stream")
 
     loop = asyncio.get_event_loop()
     q: asyncio.Queue = asyncio.Queue()
 
-    def worker():
+    def pump():
         try:
-            sys.path.insert(0, os.path.abspath(os.path.join(HERE, "..")))
-            from portal_agent.portal_agent import investigate
-            for ev in investigate(svc):
+            for ev in s.drain():
                 loop.call_soon_threadsafe(q.put_nowait, ev)
-        except Exception as e:
-            loop.call_soon_threadsafe(q.put_nowait, {"type": "portal_status", "status": "Failed"})
-            loop.call_soon_threadsafe(q.put_nowait, {"type": "portal_evidence",
-                                                     "message": f"Portal Agent error: {str(e)[:140]} — continuing normal flow"})
         finally:
             loop.call_soon_threadsafe(q.put_nowait, None)
 
-    threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=pump, daemon=True).start()
 
     async def gen():
         while True:
@@ -890,6 +935,7 @@ async def portal_agent_stream(service: str = "") -> StreamingResponse:
             if ev is None:
                 break
             yield f"data: {json.dumps(ev)}\n\n"
+        yield "data: {\"type\": \"done\"}\n\n"
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
