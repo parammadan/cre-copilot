@@ -32,6 +32,18 @@ az deployment group create -g "$RG" -f "$ROOT/infra/containerapps.bicep" \
   -p acrName="$ACR" imageTag="$TAG" adxClusterName="$ADX" aoaiName="$AOAI" aoaiDeployment="$AOAI_DEPLOYMENT" \
   -o none
 
+echo ">> [3.5/4] Granting ADX Viewer to the managed identity (retry — AAD propagation)..."
+MI_CLIENT="$(az identity list -g "$RG" --query "[?starts_with(name,'crecopilot-mi')].clientId | [0]" -o tsv)"
+TENANT="$(az account show --query tenantId -o tsv)"
+for attempt in $(seq 1 8); do
+  if az kusto database-principal-assignment create --cluster-name "$ADX" --database-name CopilotDb \
+       --resource-group "$RG" --principal-assignment-name caViewer \
+       --principal-id "$MI_CLIENT" --principal-type App --role Viewer --tenant-id "$TENANT" -o none 2>/dev/null; then
+    echo "   ADX Viewer granted."; break
+  fi
+  echo "   attempt $attempt failed (principal not yet visible) — retrying in 20s"; sleep 20
+done
+
 FQDN="$(az containerapp show -n cre-backend -g "$RG" --query properties.configuration.ingress.fqdn -o tsv)"
 
 echo ">> [4/4] Wiring PUBLIC_BASE_URL (+ TEAMS_WEBHOOK_URL if set locally)..."

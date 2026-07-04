@@ -78,17 +78,10 @@ resource aoaiRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
-// ---- ADX database viewer for the identity ----
-resource adxViewer 'Microsoft.Kusto/clusters/databases/principalAssignments@2023-08-15' = {
-  parent: adxDb
-  name: 'caViewer'
-  properties: {
-    principalId: mi.properties.clientId
-    principalType: 'App'
-    role: 'Viewer'
-    tenantId: subscription().tenantId
-  }
-}
+// NOTE: ADX database "Viewer" for this identity is granted OUT OF BAND by
+// deploy_containerapps.sh (az kusto database-principal-assignment create, with retry),
+// because the ADX data-plane AAD lookup is flaky when the MI is brand-new inside a
+// single ARM deployment ("AAD principal was not found"). Keeps the deploy reliable.
 
 // ---- observability + Container Apps environment ----
 resource law 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
@@ -192,7 +185,7 @@ resource collectorApp 'Microsoft.App/containerApps@2024-03-01' = {
       scale: { minReplicas: 1, maxReplicas: 1 }
     }
   }
-  dependsOn: [ acrPull, adxViewer ]
+  dependsOn: [ acrPull ]
 }
 
 // ---- backend / console (external ingress) ----
@@ -229,7 +222,7 @@ resource backendApp 'Microsoft.App/containerApps@2024-03-01' = {
       scale: { minReplicas: 1, maxReplicas: 2 }
     }
   }
-  dependsOn: [ acrPull, aoaiRole, adxViewer ]
+  dependsOn: [ acrPull, aoaiRole ]
 }
 
 output backendFqdn string = backendApp.properties.configuration.ingress.fqdn
