@@ -860,6 +860,8 @@ async def portal_agent_start(req: Request) -> JSONResponse:
     """Start an event-aware Portal Agent session (opens the headed browser). Flag-gated, local-only."""
     from shared.settings import AZURE_PORTAL_AGENT_ENABLED
     if not AZURE_PORTAL_AGENT_ENABLED:
+        from shared.obs import log
+        log("portal.browser_skipped", reason="AZURE_PORTAL_AGENT_ENABLED=false")
         return JSONResponse({"ok": False, "reason": "disabled"})
     b = await req.json()
     event = str(b.get("event", "generic"))

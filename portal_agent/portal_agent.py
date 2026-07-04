@@ -34,6 +34,19 @@ except Exception:  # allow standalone use
     PORTAL_SERVICE_APPS = {}
     AZURE_APPINSIGHTS_NAME = os.environ.get("AZURE_APPINSIGHTS_NAME", "")
 
+try:
+    from shared import obs as _obs
+except Exception:
+    _obs = None
+
+
+def _log(name, **k):
+    """Structured log to stdout (server logs) so browser launch/skip is always diagnosable."""
+    if _obs:
+        _obs.log(name, **k)
+    else:
+        print(f"[portal] {name} {k}", flush=True)
+
 # Read-only Container Apps blades, navigated by stable deep-link (no UI click-through).
 _BLADES = [
     ("", "opened Container App"),
@@ -135,9 +148,11 @@ class PortalSession:
 
     def _run(self):
         self._emit("portal_status", status="Opening browser")
+        _log("portal.browser_launching", sim_event=self.event, service=self.service, app=self.app)
         try:
             from playwright.sync_api import sync_playwright
         except Exception:
+            _log("portal.browser_skipped", reason="playwright_not_installed")
             self._emit("portal_status", status="Failed")
             self._emit("portal_evidence", message="Portal Agent unavailable: Playwright not installed")
             self.done = True
@@ -150,6 +165,7 @@ class PortalSession:
                 PORTAL_USER_DATA_DIR, headless=False, slow_mo=300, viewport=None,
                 args=["--start-maximized", "--window-position=760,0"])
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            _log("portal.browser_launched", app=self.app, profile=PORTAL_USER_DATA_DIR)
             self._emit("portal_status", status="Navigating")
             page.goto("https://portal.azure.com/", wait_until="domcontentloaded", timeout=30000)
             page.wait_for_timeout(1200)
@@ -178,6 +194,7 @@ class PortalSession:
                     except Exception as e:
                         self._emit("portal_evidence", message=f"Portal Agent skipped {label} ({str(e)[:50]})")
         except Exception as e:
+            _log("portal.browser_skipped", reason=str(e)[:160])
             self._emit("portal_status", status="Failed")
             self._emit("portal_evidence", message=f"Portal Agent failed: {str(e)[:120]} — continuing normal flow")
         finally:
@@ -192,6 +209,7 @@ class PortalSession:
             except Exception:
                 pass
             self.done = True
+            _log("portal.browser_exited", app=self.app)
             self._ev.put(None)
 
 
@@ -206,6 +224,7 @@ def start_session(event: str, service: str) -> PortalSession:
         except Exception:
             pass
     _SESSION = PortalSession(event, service)
+    _log("portal.session_created", sim_event=event, service=service)
     return _SESSION
 
 
