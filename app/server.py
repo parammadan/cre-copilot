@@ -183,10 +183,11 @@ def _service_base(service: str) -> str | None:
     return f"http://127.0.0.1:{port}" if port else None
 
 
-def _remediate_service(service: str) -> list:
+def _remediate_service(service: str, source: str = "console", approver: str = "human") -> list:
     """Shared remediation. REAL action first: POST /recover to the actual service (if the
     local lab is running); ALSO write recovery telemetry so the ADX-based health view heals
-    even without the services (fallback). Used by the console AND Teams."""
+    even without the services (fallback). Used by the console AND Teams. `source`/`approver`
+    are recorded in the audit trail — this is a state-changing, human-approved action."""
     service = "".join(c for c in str(service) if c.isalnum() or c in "-_")
     if not service:
         return []
@@ -214,8 +215,8 @@ def _remediate_service(service: str) -> list:
         "range i from 1 to 15 step 1 | extend d=1 | join kind=inner (targets|extend d=1) on d "
         "| extend Timestamp=tmax+i*1m, Value=target*(1.0+(rand()-0.5)*0.08), Environment='prod' "
         "| project Timestamp, Service, Metric, Value, Environment")
-    from shared.obs import log
-    log("remediation.applied", service=service, healed=healed)
+    from shared import obs
+    obs.log_remediation(service, healed, source=source, approver=approver)   # audit trail
     return healed
 
 
@@ -225,7 +226,7 @@ async def remediate(req: Request) -> JSONResponse:
     service = (await req.json()).get("service", "")
     if not service:
         return JSONResponse({"error": "no service"}, status_code=400)
-    return JSONResponse({"healed": _remediate_service(service)})
+    return JSONResponse({"healed": _remediate_service(service, source="console")})
 
 
 # ============================ INTERACTIVE SIMULATOR ============================
@@ -479,6 +480,35 @@ async def workspace_status() -> JSONResponse:
                          "collector": collector, "services": services, "checked": time.strftime("%H:%M:%S")})
 
 
+@app.get("/api/security/status")
+def security_status() -> JSONResponse:
+    """Real security-posture report (no placeholders). Architecture facts are constant;
+    secrets source is detected from the environment (Key Vault in cloud, .env in dev)."""
+    kv = os.environ.get("KEY_VAULT_URI", "")
+    in_cloud = bool(os.environ.get("CONTAINER_APP_NAME") or os.environ.get("WEBSITE_SITE_NAME") or kv)
+    items = [
+        {"key": "managed_identity", "label": "Managed Identity auth — no API keys", "status": "implemented",
+         "detail": "DefaultAzureCredential: managed identity in Azure, az login locally. No keys in code."},
+        {"key": "secrets", "label": "Secrets managed by Key Vault", "status": ("implemented" if kv else "dev"),
+         "detail": (f"Key Vault reference: {kv}" if kv else "local .env (gitignored) in dev; Key Vault reference in production")},
+        {"key": "rbac", "label": "Least-privilege RBAC per resource", "status": "implemented",
+         "detail": "AcrPull, Azure OpenAI User, Key Vault Secrets User, ADX role — scoped per resource (see docs/security.md)."},
+        {"key": "zero_trust_ui", "label": "Zero-trust — UI never touches Azure directly", "status": "implemented",
+         "detail": "The browser calls only the backend API; every Azure call is server-side."},
+        {"key": "readonly_investigation", "label": "Read-only investigation tools", "status": "implemented",
+         "detail": "Agents use detect/correlate/get_logs/get_service_health/assess_impact — no remediation tool exists for the LLM."},
+        {"key": "deterministic_gate", "label": "Deterministic confidence gate", "status": "implemented",
+         "detail": "Pure Python (confidence.py). The LLM never sets confidence and cannot bypass the gate."},
+        {"key": "human_approval", "label": "Human approval before remediation", "status": "implemented",
+         "detail": "Remediation is a separate human-triggered endpoint; a Verifier then confirms recovery independently."},
+        {"key": "audit_logging", "label": "Audit logging — tool / decision / remediation / verify", "status": "implemented",
+         "detail": "Structured JSON via obs.py (trace id) → stdout → App Insights / Log Analytics."},
+    ]
+    implemented = sum(1 for i in items if i["status"] == "implemented")
+    return JSONResponse({"items": items, "implemented": implemented, "total": len(items),
+                         "environment": "cloud" if in_cloud else "local"})
+
+
 @app.post("/api/verify")
 async def verify_ep(req: Request) -> JSONResponse:
     """Verifier agent — independently confirm recovery (real /health + logs) after remediation."""
@@ -489,6 +519,8 @@ async def verify_ep(req: Request) -> JSONResponse:
         return JSONResponse({"error": "no service"}, status_code=400)
     try:
         verdict = await run_in_threadpool(verify, service)
+        from shared import obs
+        obs.log_verify(service, verdict)          # audit trail: independent recovery result
         return JSONResponse({"verdict": verdict})
     except Exception as e:
         return JSONResponse({"verdict": "Verifier error: " + str(e)[:160]})
@@ -533,7 +565,7 @@ async def teams_notify() -> JSONResponse:
 @app.get("/api/teams/approve")
 async def teams_approve(service: str = "") -> HTMLResponse:
     """Approve callback from the Teams card (Action.OpenUrl) — runs remediation."""
-    healed = _remediate_service(service)
+    healed = _remediate_service(service, source="teams")
     ok = bool(healed)
     return HTMLResponse(
         "<html><body style='font-family:system-ui;background:#0b0d13;color:#e6e8ee;padding:48px;text-align:center'>"

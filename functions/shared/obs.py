@@ -34,3 +34,16 @@ def log_tool(trace: str, agent: str, tool: str, args=None) -> None:
 def log_decision(trace: str, service: str, confidence: float, action: str, threshold: float) -> None:
     log("gate.decision", trace=trace, service=service, confidence=confidence,
         action=action, threshold=threshold)
+
+
+def log_remediation(service: str, healed, source: str = "console", approver: str = "human", trace: str = None) -> None:
+    """Audit: a human-approved remediation was executed. `source` = console|teams; `approver`
+    = the user if known. This is a state-changing action, so it always leaves a trail."""
+    log("remediation.applied", service=service, healed=list(healed or []),
+        source=source, approver=approver, trace=trace)
+
+
+def log_verify(service: str, verdict: str, trace: str = None) -> None:
+    """Audit: the Verifier's independent recovery result."""
+    confirmed = "CONFIRMED" in (verdict or "").upper() and "NOT CONFIRMED" not in (verdict or "").upper()
+    log("verify.result", service=service, confirmed=confirmed, verdict=(verdict or "")[:200], trace=trace)

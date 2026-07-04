@@ -89,6 +89,15 @@
   .ws-svc .led{width:8px;height:8px;border-radius:50%;flex:none}
   .ws-svc .nm{color:var(--ink2)} .ws-svc .rt{margin-left:auto;color:var(--muted);font-family:ui-monospace,monospace}
   .ws-checked{margin-top:9px;font-size:10.5px;color:var(--muted)}
+  /* ---- security & governance ---- */
+  .sec-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:8px;margin-top:12px}
+  .sec-item{display:flex;gap:9px;align-items:flex-start;border:1px solid var(--border);border-radius:9px;background:var(--surface-2);padding:9px 11px}
+  .sec-item .mk{flex:none;width:18px;height:18px;border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;margin-top:1px}
+  .sec-item .mk.ok{background:rgba(34,164,71,.15);color:#22a447}
+  .sec-item .mk.dev{background:rgba(224,169,21,.15);color:#a5680a}
+  .sec-item .mk.planned{background:rgba(150,150,160,.15);color:var(--muted)}
+  .sec-item .st{font-size:12px;font-weight:650;color:var(--ink)}
+  .sec-item .dt{font-size:11px;color:var(--muted);margin-top:2px;line-height:1.45}
   .approval-card{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:12px;padding:12px 14px;border:1px solid rgba(12,163,12,.4);border-radius:10px;background:rgba(12,163,12,.08)}
   .approval-card.esc{border-color:rgba(250,178,25,.4);background:rgba(250,178,25,.07)}
   .approval-card.done{border-color:var(--border);background:var(--surface-2)}
@@ -353,6 +362,15 @@
     <div class="hint">Live health of every dependency — each value is a real backend check (ADX ping, Azure OpenAI reachability, collector freshness, microservice <code>/health</code>). Nothing here is hardcoded.</div>
     <div class="ws-grid" id="wsGrid"></div>
     <div class="ws-checked" id="wsChecked"></div>
+  </div>
+
+  <div class="card" id="secCard">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <h2 style="margin:0">Security &amp; governance</h2>
+      <span class="ws-overall" id="secScore">—</span>
+    </div>
+    <div class="hint">Real implementation status of Microsoft-style security patterns. Nothing here is aspirational — items show <b>Planned</b> if not actually implemented. See <code>docs/security.md</code>.</div>
+    <div class="sec-grid" id="secGrid"></div>
   </div>
 
   <div class="control card">
@@ -777,6 +795,20 @@ async function loadWorkspaceStatus(){
 }
 renderChips();                                   // build worker board immediately (before slow first data load)
 loadWorkspaceStatus(); setInterval(loadWorkspaceStatus, 20000);
+
+/* ---------- security & governance (real status) ---------- */
+async function loadSecurity(){
+  try{
+    const d=await (await fetch('/api/security/status')).json();
+    const cls={implemented:'ok',dev:'dev',planned:'planned'}, ic={implemented:'✓',dev:'●',planned:'○'};
+    document.getElementById('secGrid').innerHTML=(d.items||[]).map(i=>{
+      const label = i.status==='planned' ? i.label+' — Planned' : (i.status==='dev' ? i.label+' (dev: .env)' : i.label);
+      return `<div class="sec-item"><span class="mk ${cls[i.status]||'planned'}">${ic[i.status]||'○'}</span><div><div class="st">${hesc(label)}</div><div class="dt">${hesc(i.detail)}</div></div></div>`;
+    }).join('');
+    const s=document.getElementById('secScore'); s.textContent=d.implemented+'/'+d.total+' enforced · '+d.environment; s.className='ws-overall ready';
+  }catch(e){ const s=document.getElementById('secScore'); if(s) s.textContent='unavailable'; }
+}
+loadSecurity();
 
 /* ---------- SIMULATOR: continuous autonomous ops loop ---------- */
 let SIM=false, SIM_N=0;
