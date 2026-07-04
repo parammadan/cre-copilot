@@ -32,8 +32,7 @@ app = FastAPI(title="CRE Copilot Console")
 
 # ---- Autonomous mode: if true, auto-remediation-eligible incidents skip human approval. ----
 AUTONOMOUS_MODE = os.environ.get("AUTONOMOUS_MODE", "false").lower() == "true"
-# In-memory Teams escalation state (per incident) — dedup + audit. Resets on restart (demo).
-_TEAMS_STATE: dict[str, dict] = {}
+# Durable incident + approval state lives in ADX (shared/incidents.py) — the system of record.
 
 # ---- Frontend mode: legacy (vanilla console) | react (Vite build). Default legacy = no change. ----
 FRONTEND_MODE = os.environ.get("FRONTEND_MODE", "legacy").lower()
@@ -55,6 +54,16 @@ def _records(df: pd.DataFrame) -> list[dict]:
                 rec[k] = v.item()
         out.append(rec)
     return out
+
+
+def _persisted_incidents() -> list:
+    """Active incidents from the durable store (system of record). Guarded so a down/absent
+    store never breaks /api/state."""
+    try:
+        from shared import incidents as _inc
+        return _inc.list_active()
+    except Exception:
+        return []
 
 
 def _legacy_html() -> str:
@@ -163,6 +172,7 @@ def state() -> JSONResponse:
         "anomalies": _records(anomalies),
         "telemetry": tel,
         "incidents": incidents,
+        "persistedIncidents": _persisted_incidents(),   # durable state (system of record)
         "metrics": {
             "total": int(m.Total), "autoResolved": int(m.AutoResolved), "escalated": int(m.Escalated),
             "mttr": {r.Status: int(r.m) for r in mttr.itertuples(index=False)},
@@ -257,11 +267,17 @@ def _remediate_service(service: str, source: str = "console", approver: str = "h
 
 @app.post("/api/remediate")
 async def remediate(req: Request) -> JSONResponse:
-    """Simulate the rollback taking effect (console Approve button)."""
+    """Simulate the rollback taking effect (console Approve button) + update the durable record."""
     service = (await req.json()).get("service", "")
     if not service:
         return JSONResponse({"error": "no service"}, status_code=400)
-    return JSONResponse({"healed": _remediate_service(service, source="console")})
+    healed = _remediate_service(service, source="console")
+    try:
+        from shared import incidents as _inc
+        _inc.transition(_inc.make_id(service), "REMEDIATING", ApprovalStatus="approved", RemediationStatus="applied")
+    except Exception:
+        pass
+    return JSONResponse({"healed": healed})
 
 
 # ============================ INTERACTIVE SIMULATOR ============================
@@ -554,8 +570,14 @@ async def verify_ep(req: Request) -> JSONResponse:
         return JSONResponse({"error": "no service"}, status_code=400)
     try:
         verdict = await run_in_threadpool(verify, service)
-        from shared import obs
+        from shared import obs, incidents as _inc
         obs.log_verify(service, verdict)          # audit trail: independent recovery result
+        try:
+            okv = "CONFIRMED" in verdict.upper() and "NOT CONFIRMED" not in verdict.upper()
+            _inc.transition(_inc.make_id(service), "RESOLVED" if okv else "FAILED",
+                            VerifierStatus=verdict[:200], RemediationStatus="verified" if okv else "unconfirmed")
+        except Exception:
+            pass
         return JSONResponse({"verdict": verdict})
     except Exception as e:
         return JSONResponse({"verdict": "Verifier error: " + str(e)[:160]})
@@ -597,11 +619,7 @@ async def teams_notify() -> JSONResponse:
     return JSONResponse(teams.post_card(TEAMS_WEBHOOK_URL, card))
 
 
-def _incident_id(inc: dict) -> str:
-    """Stable id for an incident (same across polls) → enables dedup + state."""
-    rc = inc.get("rootCause", {})
-    key = f"{inc.get('alertService', '')}|{rc.get('service', '')}|{rc.get('version', '')}"
-    return "INC-" + hashlib.sha1(key.encode()).hexdigest()[:6].upper()
+_INFLIGHT: set = set()   # same-process guard against rapid double-clicks (store handles cross-replica/restart)
 
 
 def _top_evidence(inc: dict) -> list:
@@ -617,13 +635,86 @@ def _top_evidence(inc: dict) -> list:
     return ev
 
 
+@app.post("/api/alerts/ingest")
+async def alerts_ingest(req: Request) -> JSONResponse:
+    """Event-driven entry point: accept an Azure Monitor / generic alert, write a real Alert row,
+    create/reuse a DURABLE incident record, run the deterministic gate, and auto-escalate to Teams
+    referencing the persisted incident_id. This is how a real signal (not a button) starts a case."""
+    from shared import incidents, teams, obs
+    from shared.confidence import decide
+    from shared.settings import TEAMS_WEBHOOK_URL, PUBLIC_BASE_URL, ACT_THRESHOLD
+    b = await req.json()
+    service = str(b.get("service", "")).strip()
+    if not service:
+        return JSONResponse({"error": "service required"}, status_code=400)
+    severity = str(b.get("severity", "Sev3"))
+    metric = str(b.get("metric", "latency_ms"))
+    value = float(b.get("value", 0) or 0)
+    threshold = float(b.get("threshold", 0) or 0)
+    desc = str(b.get("description", f"{metric} breach on {service}"))
+    ts = b.get("timestamp") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    try:
+        ts_iso = pd.Timestamp(ts).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except Exception:
+        ts_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    # 1) write a real Alert row so the existing detection/correlation pipeline sees it
+    aid = "AL-" + hashlib.sha1(f"{service}{ts_iso}".encode()).hexdigest()[:8]
+    kusto.command(".set-or-append Alerts <| datatable(Timestamp:datetime,AlertId:string,Service:string,"
+                  "Metric:string,Severity:string,Threshold:real,ObservedValue:real,Description:string)"
+                  f"[datetime({ts_iso}),'{aid}','{service}','{metric}','{severity}',real({threshold}),real({value}),"
+                  f"\"{str(desc)[:300].replace(chr(34), chr(39))}\"]")
+
+    # 2) durable incident (dedup by service)
+    inc = incidents.create_or_get(service, severity, metric, value, threshold, desc)
+    iid = inc["IncidentId"]
+    trace = obs.new_trace()
+    incidents.transition(iid, "INVESTIGATING", TraceId=trace)
+    obs.log("alert_ingested", incident=iid, service=service, severity=severity, metric=metric, trace=trace)
+
+    # 3) deterministic correlation + gate (no LLM in this path)
+    out = {"incident_id": iid, "status": "INVESTIGATING", "teams_posted": False}
+    cand = kusto.query_safe(f"Correlate('{service}', datetime({ts_iso}))")
+    if cand.empty:
+        incidents.transition(iid, "AWAITING_APPROVAL", GateDecision="escalate",
+                             ApprovalStatus="pending", RemediationStatus="none", VerifierStatus="none")
+        out["status"] = "AWAITING_APPROVAL"
+        return JSONResponse(out)
+    top = cand.iloc[0]
+    conf = float(top.confidence)
+    d = decide(conf, top.Service, top.Version, ACT_THRESHOLD)
+    incidents.transition(iid, "AWAITING_APPROVAL", RootCauseService=top.Service, RootCauseVersion=top.Version,
+                         Confidence=conf, GateDecision=d.action, ApprovalStatus="pending")
+    out.update({"status": "AWAITING_APPROVAL", "gate_decision": d.action, "confidence": conf,
+                "root_cause": f"{top.Service} {top.Version}"})
+
+    # 4) auto-escalate to Teams (references the durable incident id)
+    incview = {"alertService": service, "severity": severity, "description": desc,
+               "rootCause": {"service": top.Service, "version": top.Version, "confidence": conf},
+               "impact": _records(kusto.query_safe(f"ImpactAssessment('{top.Service}')"))}
+    reason = d.reason if d.action == "escalate" else \
+        f"auto-remediation eligible (confidence {conf:.2f} ≥ gate) — human approval required (AUTONOMOUS_MODE off)."
+    if not TEAMS_WEBHOOK_URL:
+        out["teams_reason"] = "Teams integration not configured"
+        return JSONResponse(out)
+    approve_url = f"{PUBLIC_BASE_URL}/api/teams/approve?service={top.Service}&incident={iid}"
+    reject_url = f"{PUBLIC_BASE_URL}/api/teams/reject?incident={iid}"
+    card = teams.build_escalation_card(incview, iid, reason, _top_evidence(incview), approve_url, reject_url, PUBLIC_BASE_URL)
+    posted = bool(teams.post_card(TEAMS_WEBHOOK_URL, card).get("posted"))
+    incidents.transition(iid, TeamsPosted=posted)
+    if posted:
+        obs.log("teams_posted", incident=iid, service=service, severity=severity, decision=d.action, confidence=conf, trace=trace)
+    out["teams_posted"] = posted
+    return JSONResponse(out)
+
+
 @app.post("/api/escalate")
 async def escalate() -> JSONResponse:
-    """DETERMINISTIC auto-escalation. For each live incident, the backend (not the LLM) runs the
-    gate; if it escalates — or is auto-eligible but AUTONOMOUS_MODE is off — it posts a Teams card
-    (deduped). If AUTONOMOUS_MODE and auto-eligible, it remediates + verifies without a human."""
+    """DETERMINISTIC auto-escalation over live incidents (used after the manual Run). Backend (not the
+    LLM) runs the gate; escalates → posts a Teams card (deduped via the DURABLE incident record).
+    AUTONOMOUS_MODE + auto-eligible → remediate+verify without a human."""
     from fastapi.concurrency import run_in_threadpool
-    from shared import teams, obs
+    from shared import teams, obs, incidents
     from shared.confidence import decide
     from shared.settings import TEAMS_WEBHOOK_URL, PUBLIC_BASE_URL, ACT_THRESHOLD
     st = json.loads(bytes(state().body))
@@ -634,53 +725,44 @@ async def escalate() -> JSONResponse:
         rc = inc.get("rootCause", {})
         svc = rc.get("service", "")
         d = decide(float(rc.get("confidence", 0)), svc, rc.get("version", ""), threshold)
-        iid = _incident_id(inc)
-        prev = _TEAMS_STATE.get(iid)
+        rec = incidents.create_or_get(inc.get("alertService", svc), inc.get("severity", "Sev3"),
+                                      description=inc.get("description", ""))
+        iid = rec["IncidentId"]
+        trace = rec.get("TraceId") or obs.new_trace()
+        incidents.transition(iid, "AWAITING_APPROVAL", RootCauseService=svc, RootCauseVersion=rc.get("version", ""),
+                             Confidence=float(rc.get("confidence", 0)), GateDecision=d.action, TraceId=trace)
 
         if d.action == "auto_remediate" and AUTONOMOUS_MODE:
-            if prev:
-                out["duplicates"].append(iid)
-                continue
-            trace = obs.new_trace()
+            if rec.get("RemediationStatus") not in (None, "", "none"):
+                out["duplicates"].append(iid); continue
             healed = _remediate_service(svc, source="autonomous", approver="autonomous")
+            incidents.transition(iid, "VERIFYING", ApprovalStatus="auto", RemediationStatus="applied")
             obs.log("remediation_started", incident=iid, service=svc, mode="autonomous", trace=trace)
-            verdict = ""
             try:
                 from agents.assistants import verify
                 verdict = await run_in_threadpool(verify, svc)
                 obs.log_verify(svc, verdict, trace=trace)
             except Exception as e:
                 verdict = "Verifier error: " + str(e)[:120]
-            _TEAMS_STATE[iid] = {"teams_posted": False, "mode": "autonomous", "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                                 "approval_status": "auto", "approver": "autonomous", "trace": trace,
-                                 "service": svc, "verifier": verdict, "healed": healed}
-            out["auto_remediated"].append(iid)
-            continue
+            okv = "CONFIRMED" in verdict.upper() and "NOT CONFIRMED" not in verdict.upper()
+            incidents.transition(iid, "RESOLVED" if okv else "FAILED", VerifierStatus=verdict[:200])
+            out["auto_remediated"].append(iid); continue
 
         needs_human = d.action == "escalate" or (d.action == "auto_remediate" and not AUTONOMOUS_MODE)
         if not needs_human:
             continue
-        if prev and prev.get("teams_posted"):
-            out["duplicates"].append(iid)          # dedup — never post the same incident twice
-            continue
-
-        trace = obs.new_trace()
+        if rec.get("TeamsPosted"):
+            out["duplicates"].append(iid); continue     # dedup via durable state — never post twice
         reason = d.reason if d.action == "escalate" else \
             f"auto-remediation eligible (confidence {rc.get('confidence', 0):.2f} ≥ gate) — human approval required (AUTONOMOUS_MODE off)."
         if not TEAMS_WEBHOOK_URL:
-            _TEAMS_STATE[iid] = {"teams_posted": False, "reason": "Teams integration not configured",
-                                 "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ"), "approval_status": "pending", "trace": trace, "service": svc}
-            out["not_configured"].append(iid)
-            continue
-
+            incidents.transition(iid, ApprovalStatus="pending")
+            out["not_configured"].append(iid); continue
         approve_url = f"{PUBLIC_BASE_URL}/api/teams/approve?service={svc}&incident={iid}"
         reject_url = f"{PUBLIC_BASE_URL}/api/teams/reject?incident={iid}"
         card = teams.build_escalation_card(inc, iid, reason, _top_evidence(inc), approve_url, reject_url, PUBLIC_BASE_URL)
-        res = teams.post_card(TEAMS_WEBHOOK_URL, card)
-        posted = bool(res.get("posted"))
-        _TEAMS_STATE[iid] = {"teams_posted": posted, "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                             "approval_status": "pending", "approver": None, "trace": trace,
-                             "service": svc, "severity": inc.get("severity"), "reason": reason}
+        posted = bool(teams.post_card(TEAMS_WEBHOOK_URL, card).get("posted"))
+        incidents.transition(iid, ApprovalStatus="pending", TeamsPosted=posted)
         if posted:
             obs.log("teams_posted", incident=iid, service=svc, severity=inc.get("severity"),
                     decision=d.action, confidence=rc.get("confidence"), trace=trace)
@@ -692,18 +774,18 @@ async def escalate() -> JSONResponse:
 
 @app.get("/api/teams/state")
 def teams_state() -> JSONResponse:
-    """Current Teams escalation state (dedup + audit visibility for the UI)."""
-    return JSONResponse({"incidents": _TEAMS_STATE, "autonomous_mode": AUTONOMOUS_MODE})
+    """Durable incident state (dedup + audit visibility)."""
+    from shared import incidents
+    return JSONResponse({"incidents": incidents.list_active(), "autonomous_mode": AUTONOMOUS_MODE})
 
 
 @app.get("/api/teams/reject", response_class=HTMLResponse)
 def teams_reject(incident: str = "") -> str:
-    """Reject callback — record the decision, keep the incident open (no remediation)."""
-    from shared import obs
-    stt = _TEAMS_STATE.get(incident)
-    if stt is not None:
-        stt.update({"approval_status": "rejected", "approver": "human"})
-    obs.log("teams_approval_received", incident=incident, decision="rejected", trace=(stt or {}).get("trace"))
+    """Reject callback — record on the durable record, keep the incident open (no remediation)."""
+    from shared import obs, incidents
+    if incident:
+        incidents.transition(incident, ApprovalStatus="rejected")
+    obs.log("teams_approval_received", incident=incident, decision="rejected")
     return ("<html><body style='font-family:system-ui;background:#0a0a0b;color:#fafafa;padding:48px;text-align:center'>"
             "<h2 style='color:#e0a915'>🔎 Rejected — keeping investigation open</h2>"
             "<p style='color:#8a8a93'>No remediation was applied. The incident stays open for a human. You can close this tab.</p>"
@@ -712,35 +794,51 @@ def teams_reject(incident: str = "") -> str:
 
 @app.get("/api/teams/approve")
 async def teams_approve(service: str = "", incident: str = "") -> HTMLResponse:
-    """Approve callback from a Teams card — runs the existing remediation, THEN the Verifier.
-    Records approval state + full audit trail."""
+    """Approve callback — IDEMPOTENT via the durable incident record: runs remediation, THEN the
+    Verifier, and records every transition. A second click never remediates twice."""
     from fastapi.concurrency import run_in_threadpool
-    from shared import obs
-    stt = _TEAMS_STATE.get(incident) or {}
-    trace = stt.get("trace")
-    obs.log("teams_approval_received", incident=incident, service=service, decision="approved", trace=trace)
-    healed = _remediate_service(service, source="teams")           # existing remediation endpoint logic
-    obs.log("remediation_started", incident=incident, service=service, healed=healed, trace=trace)
-    verdict = ""
-    if service:
-        try:
-            from agents.assistants import verify
-            verdict = await run_in_threadpool(verify, service)      # Verifier confirms recovery
-            obs.log_verify(service, verdict, trace=trace)
-        except Exception as e:
-            verdict = "Verifier error: " + str(e)[:120]
-    if incident in _TEAMS_STATE:
-        _TEAMS_STATE[incident].update({"approval_status": "approved", "approver": "human",
-                                       "verifier": verdict, "healed": healed})
+    from shared import obs, incidents
+    iid = incident or incidents.make_id(service)
+    # idempotency: same-process guard + durable-state guard + action key
+    if iid in _INFLIGHT:
+        return HTMLResponse(_teams_page("⏳ Already processing", "This approval is being handled. You can close this tab.", "#e0a915"))
+    cur = incidents.get(iid) or {}
+    if cur.get("ApprovalStatus") == "approved" or cur.get("Status") in ("REMEDIATING", "VERIFYING", "RESOLVED", "CLOSED"):
+        return HTMLResponse(_teams_page("✓ Already approved", f"Incident {iid} was already remediated — no action taken.", "#22c55e"))
+    if not incidents.mark_action(iid, "approve"):
+        return HTMLResponse(_teams_page("✓ Already approved", f"Incident {iid} approval already recorded.", "#22c55e"))
+    _INFLIGHT.add(iid)
+    try:
+        trace = cur.get("TraceId")
+        obs.log("teams_approval_received", incident=iid, service=service, decision="approved", trace=trace)
+        incidents.transition(iid, "REMEDIATING", ApprovalStatus="approved")
+        healed = _remediate_service(service, source="teams")
+        incidents.transition(iid, RemediationStatus="applied")
+        obs.log("remediation_started", incident=iid, service=service, healed=healed, trace=trace)
+        incidents.transition(iid, "VERIFYING")
+        verdict = ""
+        if service:
+            try:
+                from agents.assistants import verify
+                verdict = await run_in_threadpool(verify, service)
+                obs.log_verify(service, verdict, trace=trace)
+            except Exception as e:
+                verdict = "Verifier error: " + str(e)[:120]
+        okv = "CONFIRMED" in verdict.upper() and "NOT CONFIRMED" not in verdict.upper()
+        incidents.transition(iid, "RESOLVED" if okv else "FAILED", VerifierStatus=verdict[:200],
+                             RemediationStatus="verified" if okv else "unconfirmed")
+    finally:
+        _INFLIGHT.discard(iid)
     ok = bool(healed)
     vhtml = f"<p style='color:#8a8a93'>🔎 Verifier: {verdict}</p>" if verdict else ""
-    return HTMLResponse(
-        "<html><body style='font-family:system-ui;background:#0a0a0b;color:#fafafa;padding:48px;text-align:center'>"
-        + (f"<h2 style='color:#22c55e'>✅ Approved &amp; remediated</h2>"
-           f"<p>Rolled back <b>{service}</b>. Healed: {', '.join(healed)}.</p>{vhtml}"
-           "<p style='color:#8a8a93'>The console shows RED→GREEN. You can close this tab.</p>"
-           if ok else "<h2 style='color:#ef4444'>No service specified.</h2>")
-        + "</body></html>")
+    body = (f"<p>Rolled back <b>{service}</b>. Healed: {', '.join(healed)}.</p>{vhtml}"
+            "<p style='color:#8a8a93'>Incident record updated. The console shows RED→GREEN. You can close this tab.</p>") if ok else "No service specified."
+    return HTMLResponse(_teams_page("✅ Approved &amp; remediated" if ok else "⚠ No service", body, "#22c55e" if ok else "#ef4444"))
+
+
+def _teams_page(title: str, body: str, color: str) -> str:
+    return ("<html><body style='font-family:system-ui;background:#0a0a0b;color:#fafafa;padding:48px;text-align:center'>"
+            f"<h2 style='color:{color}'>{title}</h2><div>{body}</div></body></html>")
 
 
 @app.post("/api/reset")
