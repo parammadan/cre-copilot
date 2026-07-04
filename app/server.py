@@ -843,9 +843,12 @@ def _teams_page(title: str, body: str, color: str) -> str:
 
 @app.get("/api/portal-agent/config")
 def portal_agent_config() -> JSONResponse:
-    """Whether the headed Portal Agent is enabled (LOCAL-ONLY, off by default)."""
-    from shared.settings import AZURE_PORTAL_AGENT_ENABLED
-    return JSONResponse({"enabled": bool(AZURE_PORTAL_AGENT_ENABLED)})
+    """Portal Agent config (LOCAL-ONLY): whether it's enabled, and whether to embed the noVNC
+    live browser panel (vs an external headed window)."""
+    from shared.settings import AZURE_PORTAL_AGENT_ENABLED, PORTAL_AGENT_NOVNC, PORTAL_NOVNC_URL
+    return JSONResponse({"enabled": bool(AZURE_PORTAL_AGENT_ENABLED),
+                         "novnc": bool(PORTAL_AGENT_NOVNC),
+                         "novnc_url": PORTAL_NOVNC_URL if PORTAL_AGENT_NOVNC else ""})
 
 
 def _portal():

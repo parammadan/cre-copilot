@@ -458,6 +458,15 @@
     <div id="approval"></div>
   </div>
 
+  <div class="card" id="portalPanel" style="display:none">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <h2 style="margin:0">Live Azure Portal — Portal Agent (embedded)</h2>
+      <span class="badge badge-blue" id="portalPanelBadge">read-only · noVNC</span>
+    </div>
+    <div class="hint">A real Chromium (in a local VNC container) streamed live via noVNC. The Portal Agent drives it read-only, in sync with the investigation on the left. Log in here once (Azure + MFA); the session persists.</div>
+    <iframe id="portalFrame" title="Azure Portal (noVNC)" style="width:100%;height:640px;border:1px solid var(--border);border-radius:10px;margin-top:10px;background:#0c0c0e"></iframe>
+  </div>
+
   <div id="trendbar"></div>
 
   <div class="grid">
@@ -833,7 +842,14 @@ function runIncident(onDone){
 window._portalEnabled=false;
 const PORTAL_STATE_MAP={'Opening browser':'thinking','Navigating':'calling','Inspecting':'calling','Evidence captured':'thinking','Complete':'done','Failed':'failed','disabled':'idle','Idle':'idle'};
 window._lastSimEvent='generic';   // set by sandbox controls → drives contextual portal navigation
-fetch('/api/portal-agent/config').then(r=>r.json()).then(d=>{ window._portalEnabled=!!d.enabled; if(window._portalEnabled) renderChips(true); }).catch(()=>{});
+fetch('/api/portal-agent/config').then(r=>r.json()).then(d=>{
+  window._portalEnabled=!!d.enabled;
+  if(window._portalEnabled) renderChips(true);
+  if(d.novnc && d.novnc_url){                 // embedded live browser panel
+    const p=document.getElementById('portalPanel'), f=document.getElementById('portalFrame');
+    if(p&&f){ f.src=d.novnc_url; p.style.display=''; }
+  }
+}).catch(()=>{});
 async function runPortalAgent(service){
   if(!window._portalEnabled) return;
   if(!document.getElementById('w-Portal')) renderChips(true);

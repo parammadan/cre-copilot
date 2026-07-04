@@ -36,6 +36,12 @@ AZURE_TENANT_ID = os.environ.get("AZURE_TENANT_ID", "54fc64b7-f5a8-41cf-a1f2-ba1
 AZURE_RESOURCE_GROUP = os.environ.get("AZURE_RESOURCE_GROUP", "rg-cre-copilot")
 PORTAL_USER_DATA_DIR = os.environ.get("PORTAL_USER_DATA_DIR", os.path.expanduser("~/.cre-portal-profile"))
 AZURE_APPINSIGHTS_NAME = os.environ.get("AZURE_APPINSIGHTS_NAME", "crecopilot-ai-vxxmsm")  # for the Failures/Exceptions blades
+
+# Optional EMBEDDED browser mode: Playwright drives Chromium inside a Docker VNC container; noVNC
+# streams it into the console's right panel. Default off → external headed Chromium (fallback).
+PORTAL_AGENT_NOVNC = os.environ.get("PORTAL_AGENT_NOVNC", "false").lower() == "true"
+PORTAL_CDP_URL = os.environ.get("PORTAL_CDP_URL", "http://localhost:9222")            # container Chromium (CDP)
+PORTAL_NOVNC_URL = os.environ.get("PORTAL_NOVNC_URL", "http://localhost:6080/vnc.html?autoconnect=1&resize=scale&reconnect=1")
 # incident service -> the Container App name to open (our RG only)
 PORTAL_SERVICE_APPS = {
     "checkout-api": "checkout-api", "payment-service": "payment-service",

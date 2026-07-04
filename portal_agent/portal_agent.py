@@ -21,11 +21,13 @@ import os
 import queue
 import sys
 import threading
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "functions"))
 try:
     from shared.settings import (AZURE_SUBSCRIPTION_ID, AZURE_TENANT_ID, AZURE_RESOURCE_GROUP,
-                                 PORTAL_USER_DATA_DIR, PORTAL_SERVICE_APPS, AZURE_APPINSIGHTS_NAME)
+                                 PORTAL_USER_DATA_DIR, PORTAL_SERVICE_APPS, AZURE_APPINSIGHTS_NAME,
+                                 PORTAL_AGENT_NOVNC, PORTAL_CDP_URL)
 except Exception:  # allow standalone use
     AZURE_SUBSCRIPTION_ID = os.environ.get("AZURE_SUBSCRIPTION_ID", "")
     AZURE_TENANT_ID = os.environ.get("AZURE_TENANT_ID", "")
@@ -33,6 +35,8 @@ except Exception:  # allow standalone use
     PORTAL_USER_DATA_DIR = os.environ.get("PORTAL_USER_DATA_DIR", os.path.expanduser("~/.cre-portal-profile"))
     PORTAL_SERVICE_APPS = {}
     AZURE_APPINSIGHTS_NAME = os.environ.get("AZURE_APPINSIGHTS_NAME", "")
+    PORTAL_AGENT_NOVNC = os.environ.get("PORTAL_AGENT_NOVNC", "false").lower() == "true"
+    PORTAL_CDP_URL = os.environ.get("PORTAL_CDP_URL", "http://localhost:9222")
 
 try:
     from shared import obs as _obs
@@ -77,22 +81,18 @@ def _ai_link(blade: str) -> str:
 
 
 def _plan_for(event: str, app: str) -> list:
-    """Contextual navigation plan (url, label, dwell_ms) chosen by the sandbox event type.
-    Each investigation stage advances one step; the browser stays open throughout."""
+    """Contextual plan (url, label, dwell_ms) by sandbox event. First the event-specific page,
+    then LOG STREAM as the resting page (where we hold to watch live updates)."""
     dl = lambda b="": _deeplink(app, b)
-    ai = _ai_link("failures") or dl("logstream")
-    plans = {
-        "bad_deploy": [(dl(), "Container App overview", 2500), (dl("revisionManagement"), "Revisions", 3000),
-                       (dl("revisionManagement"), "Current revision", 3000), (dl("revisionManagement"), "Deployment history", 3000)],
-        "kill":       [(dl(), "Container App overview", 2500), (dl(), "Health / status", 3000),
-                       (dl("logstream"), "Log stream", 3500)],
-        "errors":     [(ai, "App Insights · Failures", 3500), (ai, "Exceptions", 3000),
-                       (dl("logstream"), "Log stream", 3000)],
-        "traffic":    [(dl("metrics"), "Metrics", 3000), (dl("metrics"), "Live metrics", 3000),
-                       (dl("metrics"), "Performance", 3000)],
-    }
-    return plans.get(event, [(dl(), "Overview", 2500), (dl("revisionManagement"), "Revisions", 3000),
-                             (dl("logstream"), "Log stream", 3000), (dl("metrics"), "Metrics", 3000)])
+    ls = dl("logstream")
+    ai = _ai_link("failures") or ls
+    first = {
+        "bad_deploy": (dl("revisionManagement"), "Revisions"),
+        "kill":       (dl(), "Container App overview"),
+        "errors":     (ai, "App Insights · Failures"),
+        "traffic":    (dl("metrics"), "Metrics"),
+    }.get(event, (dl(), "Overview"))
+    return [(first[0], first[1], 5000), (ls, "Log stream (live)", 8000)]
 
 
 class PortalSession:
@@ -102,6 +102,9 @@ class PortalSession:
 
     IDLE_TIMEOUT = 300   # close if no stage command for 5 min (safety)
 
+    LOG_STREAM_MIN_SEC = 60   # hold on Log Stream at least this long (watch live updates)
+    POST_COMPLETE_SEC = 15    # keep the browser open this long after the investigation completes
+
     def __init__(self, event: str, service: str):
         self.event = (event or "generic").lower()
         self.service = service
@@ -109,6 +112,10 @@ class PortalSession:
         self.plan = _plan_for(self.event, self.app)
         self.idx = 0
         self.done = False
+        self._ls_url = _deeplink(self.app, "logstream")
+        self._reached_ls = False
+        self._ls_since = None
+        self._novnc = False   # set true if we connect to the container's Chromium over CDP
         self._cmd = queue.Queue()
         self._ev = queue.Queue()
         threading.Thread(target=self._run, daemon=True).start()
@@ -135,16 +142,15 @@ class PortalSession:
         self._ev.put(d)
 
     def _next_step(self, stage: str):
-        s = (stage or "").lower()
-        if s.startswith("verif"):                    # Verifier → always re-check Health
-            return (_deeplink(self.app, ""), "refreshed Health", 3500)
-        if s.startswith("impact"):                   # Impact → dependency/resource view
-            return (_deeplink(self.app, ""), "resource / dependency view", 3000)
+        # Once on Log Stream, later stages just DWELL there (the page streams on its own) — url=None
+        # means "don't re-navigate, just hold so live updates keep flowing".
+        if self._reached_ls:
+            return (None, "Log stream (live)", 6000)
         if self.idx < len(self.plan):
             step = self.plan[self.idx]
             self.idx += 1
             return step
-        return self.plan[-1] if self.plan else (_deeplink(self.app, ""), "Overview", 2500)
+        return (None, "Log stream (live)", 6000)
 
     def _run(self):
         self._emit("portal_status", status="Opening browser")
@@ -161,11 +167,28 @@ class PortalSession:
         pw = ctx = None
         try:
             pw = sync_playwright().start()
-            ctx = pw.chromium.launch_persistent_context(
-                PORTAL_USER_DATA_DIR, headless=False, slow_mo=300, viewport=None,
-                args=["--start-maximized", "--window-position=760,0"])
-            page = ctx.pages[0] if ctx.pages else ctx.new_page()
-            _log("portal.browser_launched", app=self.app, profile=PORTAL_USER_DATA_DIR)
+            use_novnc = PORTAL_AGENT_NOVNC
+            if use_novnc:
+                # EMBEDDED mode: drive the container's Chromium over CDP (streamed via noVNC).
+                try:
+                    browser = pw.chromium.connect_over_cdp(PORTAL_CDP_URL, timeout=8000)
+                    ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+                    page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                    self._novnc = True
+                    _log("portal.novnc_connected", cdp=PORTAL_CDP_URL)
+                except Exception as e:
+                    _log("portal.novnc_connect_failed", reason=str(e)[:140])
+                    self._emit("portal_evidence", message="Portal Agent: noVNC container not reachable — falling back to external browser")
+                    use_novnc = False
+            if not use_novnc:
+                # FALLBACK / default: external headed Chromium on the host, right side of the screen.
+                win_pos = os.environ.get("PORTAL_WINDOW_POS", "1000,0")
+                win_size = os.environ.get("PORTAL_WINDOW_SIZE", "1000,1300")
+                ctx = pw.chromium.launch_persistent_context(
+                    PORTAL_USER_DATA_DIR, headless=False, slow_mo=300, viewport=None,
+                    args=[f"--window-position={win_pos}", f"--window-size={win_size}"])
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            _log("portal.browser_launched", mode=("novnc" if self._novnc else "external"), app=self.app)
             self._emit("portal_status", status="Navigating")
             page.goto("https://portal.azure.com/", wait_until="domcontentloaded", timeout=30000)
             page.wait_for_timeout(1200)
@@ -178,9 +201,15 @@ class PortalSession:
                 except queue.Empty:
                     break                             # idle timeout → close
                 if cmd == "stop":
+                    # keep watching Log Stream for at least LOG_STREAM_MIN_SEC total
+                    if self._reached_ls and self._ls_since:
+                        remain = self.LOG_STREAM_MIN_SEC - (time.time() - self._ls_since)
+                        if remain > 0:
+                            self._emit("portal_evidence", message=f"Portal Agent holding on Log stream ~{int(remain)}s more (live)")
+                            page.wait_for_timeout(int(remain * 1000))
                     self._emit("portal_status", status="Evidence captured")
                     self._emit("portal_evidence", message=f"Portal Agent captured portal evidence for {self.app}")
-                    page.wait_for_timeout(4000)       # linger so the last page is observable
+                    page.wait_for_timeout(self.POST_COMPLETE_SEC * 1000)   # stay open 15s after completion
                     self._emit("portal_status", status="Complete")
                     break
                 if cmd == "nav":
@@ -189,6 +218,9 @@ class PortalSession:
                     try:
                         if url:
                             page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                            if url == self._ls_url and not self._reached_ls:
+                                self._reached_ls = True
+                                self._ls_since = time.time()   # start the Log Stream watch clock
                         page.wait_for_timeout(dwell)   # pause on the page so the user can observe it
                         self._emit("portal_evidence", message=f"Portal Agent → {label} ({self.app})")
                     except Exception as e:
@@ -198,18 +230,21 @@ class PortalSession:
             self._emit("portal_status", status="Failed")
             self._emit("portal_evidence", message=f"Portal Agent failed: {str(e)[:120]} — continuing normal flow")
         finally:
-            try:
-                if ctx:
-                    ctx.close()
-            except Exception:
-                pass
+            # In noVNC mode DON'T close the container's Chromium (keep the profile/login + the
+            # embedded view alive for the next run) — only external browsers are closed here.
+            if not self._novnc:
+                try:
+                    if ctx:
+                        ctx.close()
+                except Exception:
+                    pass
             try:
                 if pw:
-                    pw.stop()
+                    pw.stop()      # disconnects the CDP session; container browser stays up
             except Exception:
                 pass
             self.done = True
-            _log("portal.browser_exited", app=self.app)
+            _log("portal.browser_exited", app=self.app, mode=("novnc" if self._novnc else "external"))
             self._ev.put(None)
 
 
