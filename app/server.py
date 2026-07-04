@@ -416,13 +416,14 @@ def _check_aoai() -> dict:
 
 
 def _check_collector() -> dict:
-    """Is the collector process live, and how fresh is the telemetry it writes?"""
+    """Is the collector live, and how fresh is the telemetry it writes? 'running' is true if the
+    local process is found OR telemetry is fresh (the latter covers a separate collector container)."""
     interval = int(os.environ.get("COLLECTOR_INTERVAL_SEC", "12"))
     source = os.environ.get("TELEMETRY_SOURCE", "synthetic")
-    running = False
+    local_proc = False
     try:
         r = subprocess.run(["pgrep", "-f", "collector.py"], capture_output=True, text=True, timeout=2)
-        running = bool(r.stdout.strip())
+        local_proc = bool(r.stdout.strip())
     except Exception:
         pass
     last_sync, age = None, None
@@ -436,7 +437,9 @@ def _check_collector() -> dict:
             last_sync = lt.tz_convert(local_tz).strftime("%H:%M:%S")  # local time, consistent with other checks
     except Exception:
         pass
-    return {"name": "Telemetry Collector", "running": running, "source": source,
+    # fresh = telemetry written within ~3 poll intervals → collector is alive (even if in another container)
+    fresh = source == "services" and age is not None and age <= interval * 3 + 15
+    return {"name": "Telemetry Collector", "running": local_proc or fresh, "source": source,
             "poll_interval_sec": interval, "monitored_services": len(_SERVICE_PORTS),
             "last_sync": last_sync, "last_sync_age_sec": age}
 
