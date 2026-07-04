@@ -29,6 +29,15 @@ HERE = os.path.dirname(__file__)
 ROOT = os.path.join(HERE, "..")
 app = FastAPI(title="CRE Copilot Console")
 
+# ---- Frontend mode: legacy (vanilla console) | react (Vite build). Default legacy = no change. ----
+FRONTEND_MODE = os.environ.get("FRONTEND_MODE", "legacy").lower()
+_DIST = os.path.join(HERE, "..", "frontend", "dist")
+_REACT_INDEX = os.path.join(_DIST, "index.html")
+_REACT_AVAILABLE = os.path.isdir(os.path.join(_DIST, "assets")) and os.path.isfile(_REACT_INDEX)
+if _REACT_AVAILABLE:  # serve the built SPA's static assets (inert in legacy mode)
+    from fastapi.staticfiles import StaticFiles  # noqa: E402
+    app.mount("/assets", StaticFiles(directory=os.path.join(_DIST, "assets")), name="assets")
+
 
 def _records(df: pd.DataFrame) -> list[dict]:
     out = []
@@ -42,10 +51,27 @@ def _records(df: pd.DataFrame) -> list[dict]:
     return out
 
 
-@app.get("/", response_class=HTMLResponse)
-def index() -> str:
+def _legacy_html() -> str:
     with open(os.path.join(HERE, "index.html")) as f:
         return f.read()
+
+
+def _react_html() -> str:
+    with open(_REACT_INDEX) as f:
+        return f.read()
+
+
+@app.get("/legacy", response_class=HTMLResponse)
+def legacy_console() -> str:
+    """The original vanilla console — ALWAYS available, regardless of FRONTEND_MODE."""
+    return _legacy_html()
+
+
+@app.get("/", response_class=HTMLResponse)
+def index() -> str:
+    if FRONTEND_MODE == "react" and _REACT_AVAILABLE:
+        return _react_html()
+    return _legacy_html()
 
 
 @app.get("/api/state")
@@ -588,3 +614,13 @@ def reset() -> JSONResponse:
             break
         time.sleep(4)
     return state()
+
+
+# SPA fallback — client-side routes (e.g. /workspace) return the React shell in react mode.
+# Registered LAST so it never shadows /api/*, /legacy, or the /assets mount. GET-only.
+@app.get("/{full_path:path}", response_class=HTMLResponse)
+def spa_fallback(full_path: str) -> str:
+    if FRONTEND_MODE == "react" and _REACT_AVAILABLE and not full_path.startswith("api"):
+        return _react_html()
+    from fastapi import HTTPException
+    raise HTTPException(status_code=404)

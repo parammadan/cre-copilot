@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/landingpage.tsx","./src/components/workspace/opscenter.tsx","./src/components/workspace/securitycard.tsx","./src/components/workspace/workspacestatus.tsx","./src/lib/api.ts","./src/lib/types.ts","./src/pages/workspace.tsx","./vite.config.ts"],"version":"5.9.3"}
