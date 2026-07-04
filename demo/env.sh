@@ -9,3 +9,5 @@ export PY="$CRE_ROOT/data/.venv/bin/python"
 
 # Load local secrets (gitignored) if present — e.g. TEAMS_WEBHOOK_URL
 if [ -f "$CRE_ROOT/demo/.env" ]; then set -a; . "$CRE_ROOT/demo/.env"; set +a; fi
+
+export FRONTEND_MODE="react"   # local serves the React landing at /  (set to legacy to use the old console)
