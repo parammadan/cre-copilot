@@ -293,6 +293,40 @@ def postmortem(service: str, facts: str) -> str:
     return msg.content[0].text.value if msg.content else "(no review)"
 
 
+_VER_ID = None
+
+
+def _verifier_agent():
+    global _VER_ID
+    if _VER_ID:
+        return _VER_ID
+    tools = [TOOLDEFS[t] for t in ("get_service_health", "get_logs", "assess_impact")]
+    instr = ("You are the Verifier — you INDEPENDENTLY confirm recovery AFTER remediation. Call "
+             "get_service_health(service_name) and get_logs(service_name) (and assess_impact if useful). Confirm the "
+             "service status is healthy, its dependencies are healthy, and error counts are low. Output ONE line: "
+             "'RECOVERY CONFIRMED — <service> healthy, deps healthy, <n> errors' OR 'NOT CONFIRMED — <reason>'. "
+             "Evidence only, no prose.")
+    existing = {a.name: a for a in client.beta.assistants.list(limit=100).data if a.name == "CRE-Verifier"}
+    if "CRE-Verifier" in existing:
+        a = client.beta.assistants.update(existing["CRE-Verifier"].id, model=MODEL, instructions=instr, tools=tools)
+    else:
+        a = client.beta.assistants.create(model=MODEL, name="CRE-Verifier", instructions=instr, tools=tools)
+    _VER_ID = a.id
+    return _VER_ID
+
+
+def verify(service: str) -> str:
+    """Independent recovery check after remediation — real /health + logs evidence."""
+    aid = _verifier_agent()
+    tid = client.beta.threads.create().id
+    client.beta.threads.messages.create(thread_id=tid, role="user",
+                                        content=f"Remediation was applied to {service}. Independently verify recovery now.")
+    obs.log("verify.run", service=service)
+    _run_agent(tid, aid)
+    msg = client.beta.threads.messages.list(thread_id=tid, order="desc", limit=1).data[0]
+    return msg.content[0].text.value if msg.content else "(no verdict)"
+
+
 def run():
     agents = _ensure_assistants()
     thread = client.beta.threads.create()
@@ -320,8 +354,9 @@ def _consume(stream, thread_id, name):
                     obs.log_tool(_TRACE, name, tc.function.name)
                     yield {"type": "tool_call", "agent": name, "tool": tc.function.name}
                     args = json.loads(tc.function.arguments or "{}")
-                    outs.append({"tool_call_id": tc.id,
-                                 "output": DISPATCH.get(tc.function.name, lambda a: "{}")(args)})
+                    out = DISPATCH.get(tc.function.name, lambda a: "{}")(args)
+                    yield {"type": "evidence", "agent": name, "tool": tc.function.name, "summary": str(out)[:180]}
+                    outs.append({"tool_call_id": tc.id, "output": out})
                 nxt = client.beta.threads.runs.submit_tool_outputs_stream(
                     thread_id=thread_id, run_id=run_obj.id, tool_outputs=outs)
                 yield from _consume(nxt, thread_id, name)
