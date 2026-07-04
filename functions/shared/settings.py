@@ -25,3 +25,18 @@ KUSTO_TIMEOUT_SEC = int(os.environ.get("CRE_KUSTO_TIMEOUT_SEC", "30"))
 # --- Microsoft Teams integration ---
 TEAMS_WEBHOOK_URL = os.environ.get("TEAMS_WEBHOOK_URL", "")           # your channel's Incoming Webhook
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000")  # public URL for the Approve callback
+
+# --- Portal Agent (headed Playwright, LOCAL-ONLY, READ-ONLY, off by default) ---
+# Opens a visible Chromium beside the app and navigates deep-links to OUR resources in the
+# Azure Portal (read-only). Never enabled in cloud (no display). No secrets — reuses a logged-in
+# local browser profile.
+AZURE_PORTAL_AGENT_ENABLED = os.environ.get("AZURE_PORTAL_AGENT_ENABLED", "false").lower() == "true"
+AZURE_SUBSCRIPTION_ID = os.environ.get("AZURE_SUBSCRIPTION_ID", "c1ae007a-d508-435f-b93e-79a29fe07589")
+AZURE_TENANT_ID = os.environ.get("AZURE_TENANT_ID", "54fc64b7-f5a8-41cf-a1f2-ba13b2831628")
+AZURE_RESOURCE_GROUP = os.environ.get("AZURE_RESOURCE_GROUP", "rg-cre-copilot")
+PORTAL_USER_DATA_DIR = os.environ.get("PORTAL_USER_DATA_DIR", os.path.expanduser("~/.cre-portal-profile"))
+# incident service -> the Container App name to open (our RG only)
+PORTAL_SERVICE_APPS = {
+    "checkout-api": "checkout-api", "payment-service": "payment-service",
+    "inventory-service": "inventory-service", "auth-service": "auth-service",
+}

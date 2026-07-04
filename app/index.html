@@ -767,6 +767,15 @@ function renderChips(force){
        <div class="wbar"><i></i></div>
        <div class="wterm" id="term-${n}"></div>
      </div>`).join('');
+  if(window._portalEnabled){   // headed Portal Agent (local-only, flag-gated) — not part of the ORDER cascade
+    host.insertAdjacentHTML('beforeend',
+      `<div class="worker" id="w-Portal" data-state="idle">
+         <div class="wh"><span class="wdot"></span><span class="wname">Portal Agent (Azure)</span><span class="wstat">Idle</span><span class="wts"></span></div>
+         <div class="wrole">Headed Chromium · read-only Azure Portal</div>
+         <div class="wbar"><i></i></div>
+         <div class="wterm" id="term-Portal"></div>
+       </div>`);
+  }
 }
 function setWorker(n,state,detail){
   const el=document.getElementById('w-'+n); if(!el) return;
@@ -800,6 +809,9 @@ function runIncident(onDone){
   renderChips(true);                               // force-reset worker board to Idle for a fresh run
   document.getElementById('evfeed').innerHTML='';
   clearTimeline(); _TRACE=null; updateRuntime();
+  // headed Portal Agent runs in PARALLEL (local-only, flag-gated) — opens Azure Portal beside the app
+  const _psvc=(STATE&&STATE.incidents&&STATE.incidents[0]&&STATE.incidents[0].rootCause&&STATE.incidents[0].rootCause.service)||'';
+  runPortalAgent(_psvc);
   const mode=new URLSearchParams(location.search).get('mode');
   const es=new EventSource('/api/incident/stream'+(mode?('?mode='+encodeURIComponent(mode)):''));
   if(mode==='dynamic'){ document.getElementById('statusText').textContent="🧭 autonomous investigation (dynamic mode)"; }
@@ -815,6 +827,23 @@ function runIncident(onDone){
     else if(ev.type==='done'){ es.close(); ORDER.forEach(w=>{ if(isActive(wstate(w))) setWorker(w,'done'); }); setWorker('Verifier','waiting','Waiting for approval'); tl('Investigation complete','done'); btn.disabled=false; btn.textContent="▶ Run incident response"; load().then(()=>{ updateRuntime(); showApproval(); autoEscalate(); if(onDone) onDone(); }); }
   };
   es.onerror=()=>{ es.close(); btn.disabled=false; btn.textContent="▶ Run incident response"; if(onDone) onDone(); };
+}
+
+/* ---------- Portal Agent (headed Chromium, read-only Azure Portal; local-only, flag-gated) ---------- */
+window._portalEnabled=false;
+const PORTAL_STATE_MAP={'Opening browser':'thinking','Navigating':'calling','Inspecting':'calling','Evidence captured':'thinking','Complete':'done','Failed':'failed','disabled':'idle'};
+fetch('/api/portal-agent/config').then(r=>r.json()).then(d=>{ window._portalEnabled=!!d.enabled; if(window._portalEnabled) renderChips(true); }).catch(()=>{});
+function runPortalAgent(service){
+  if(!window._portalEnabled) return;
+  if(!document.getElementById('w-Portal')) renderChips(true);
+  setWorker('Portal','thinking','Opening browser'); tl('Portal Agent starting (headed Chromium, read-only)','tool');
+  const es=new EventSource('/api/portal-agent/stream?service='+encodeURIComponent(service||''));
+  es.onmessage=e=>{ const ev=JSON.parse(e.data);
+    if(ev.type==='portal_status'){ setWorker('Portal', PORTAL_STATE_MAP[ev.status]||'thinking', ev.status); tl('Portal Agent: '+hesc(ev.status),'tool'); }
+    else if(ev.type==='portal_evidence'){ evLine('portal', ev.message); tl(hesc(ev.message),'evidence'); }
+    else if(ev.type==='done'){ es.close(); }
+  };
+  es.onerror=()=>{ es.close(); };
 }
 
 /* ---------- automatic Teams escalation (backend decides via the gate; LLM never posts) ---------- */

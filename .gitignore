@@ -16,3 +16,6 @@ demo/.env
 infra/*.json
 frontend/node_modules/
 frontend/dist/
+
+# Portal Agent local browser profile (never commit)
+**/.cre-portal-profile/

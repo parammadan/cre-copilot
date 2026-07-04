@@ -841,6 +841,59 @@ def _teams_page(title: str, body: str, color: str) -> str:
             f"<h2 style='color:{color}'>{title}</h2><div>{body}</div></body></html>")
 
 
+@app.get("/api/portal-agent/config")
+def portal_agent_config() -> JSONResponse:
+    """Whether the headed Portal Agent is enabled (LOCAL-ONLY, off by default)."""
+    from shared.settings import AZURE_PORTAL_AGENT_ENABLED
+    return JSONResponse({"enabled": bool(AZURE_PORTAL_AGENT_ENABLED)})
+
+
+@app.get("/api/portal-agent/stream")
+async def portal_agent_stream(service: str = "") -> StreamingResponse:
+    """Stream the headed, read-only Portal Agent as it navigates our resources in the Azure Portal.
+    Runs in a worker thread (sync Playwright) bridged to SSE — mirrors the incident stream. If the
+    feature flag is off or Playwright fails, it emits a status and ends; the main flow is unaffected."""
+    import asyncio
+    import threading
+    from shared.settings import AZURE_PORTAL_AGENT_ENABLED
+    svc = "".join(c for c in str(service) if c.isalnum() or c in "-_")
+
+    async def _one(events):
+        for e in events:
+            yield f"data: {json.dumps(e)}\n\n"
+
+    if not AZURE_PORTAL_AGENT_ENABLED:
+        return StreamingResponse(_one([{"type": "portal_status", "status": "disabled"}, {"type": "done"}]),
+                                 media_type="text/event-stream")
+
+    loop = asyncio.get_event_loop()
+    q: asyncio.Queue = asyncio.Queue()
+
+    def worker():
+        try:
+            sys.path.insert(0, os.path.abspath(os.path.join(HERE, "..")))
+            from portal_agent.portal_agent import investigate
+            for ev in investigate(svc):
+                loop.call_soon_threadsafe(q.put_nowait, ev)
+        except Exception as e:
+            loop.call_soon_threadsafe(q.put_nowait, {"type": "portal_status", "status": "Failed"})
+            loop.call_soon_threadsafe(q.put_nowait, {"type": "portal_evidence",
+                                                     "message": f"Portal Agent error: {str(e)[:140]} — continuing normal flow"})
+        finally:
+            loop.call_soon_threadsafe(q.put_nowait, None)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    async def gen():
+        while True:
+            ev = await q.get()
+            if ev is None:
+                break
+            yield f"data: {json.dumps(ev)}\n\n"
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @app.post("/api/reset")
 def reset() -> JSONResponse:
     """Re-plant a fresh scenario, then return the new state."""
