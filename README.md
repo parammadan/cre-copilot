@@ -15,7 +15,7 @@ Built to demonstrate SRE / service-engineering + multi-agent AI on the Microsoft
 > detection, correlation, confidence, the deterministic gate, human approval, and verification — is
 > real and runs on live Azure services.
 
-**Deployed live on Azure Container Apps** · keyless (managed identity) · [demo script](demo/demo_script.md) · [architecture](docs/architecture.md) · [security](docs/security.md)
+**Deployed live on Azure Container Apps** · keyless (managed identity) · [architecture](docs/architecture.md) · [security](docs/security.md)
 
 ![CRE Copilot console](docs/screenshots/console.png)
 
