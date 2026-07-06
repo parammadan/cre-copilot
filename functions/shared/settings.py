@@ -6,6 +6,23 @@ import os
 # --- the confidence gate (the one number that decides act vs escalate) ---
 ACT_THRESHOLD = float(os.environ.get("CRE_ACT_THRESHOLD", "0.70"))
 
+# --- demo targeting (OFF by default; never changes production logic) ---
+# When on, a sandbox action makes its target the PRIMARY suspect for that run: the agents begin
+# there and the console prioritizes that incident. Production (DEMO_MODE off) is untouched — the
+# agents investigate purely from telemetry with no operator-supplied bias.
+DEMO_MODE = os.environ.get("CRE_DEMO_MODE", "false").lower() == "true"
+
+# --- self-healing safety (permission gate + guardrails; deterministic, no LLM) ---
+# A PRE-EXECUTION safety layer evaluated before ANY remediation (human or autonomous):
+#   kill switch (emergency stop), rate limit, concurrency cap, and a tier-0 blast-radius rule
+#   (autonomous heals of a tier-0 service are downgraded to human approval). Production-safe
+#   defaults: permissive for human-approved actions, conservative for autonomous ones.
+SELF_HEAL_KILL_SWITCH = os.environ.get("CRE_SELF_HEAL_KILL_SWITCH", "false").lower() == "true"
+SELF_HEAL_MAX_PER_HOUR = int(os.environ.get("CRE_SELF_HEAL_MAX_PER_HOUR", "5"))
+SELF_HEAL_MAX_CONCURRENT = int(os.environ.get("CRE_SELF_HEAL_MAX_CONCURRENT", "1"))
+TIER0_SERVICES = {s.strip() for s in os.environ.get("CRE_TIER0_SERVICES", "auth-service").split(",") if s.strip()}
+BLAST_RADIUS_CAP = int(os.environ.get("CRE_BLAST_RADIUS_CAP", "2"))   # > this many downstream → human approval
+
 # --- Azure Data Explorer ---
 ADX_CLUSTER_URI = os.environ.get("ADX_CLUSTER_URI", "https://crecopilotadxvxxmsm.eastus.kusto.windows.net")
 ADX_DATABASE = os.environ.get("ADX_DATABASE", "CopilotDb")

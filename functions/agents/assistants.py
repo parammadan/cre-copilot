@@ -16,8 +16,12 @@ warnings.filterwarnings("ignore")
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from openai import AzureOpenAI
 
-from shared import kusto, obs
+from shared import kusto, obs, settings, security
 from shared.confidence import decide
+
+# Tools whose output contains UNTRUSTED, attacker-influenceable text (log lines, alert
+# descriptions) — scanned for prompt injection before it can influence the model.
+_UNTRUSTED_TOOLS = {"get_logs", "get_alerts", "get_container_app_logs", "get_container_app_system_logs"}
 
 _TRACE = None  # correlation id for the current incident run
 
@@ -29,6 +33,19 @@ _tp = get_bearer_token_provider(DefaultAzureCredential(), "https://cognitiveserv
 client = AzureOpenAI(azure_endpoint=ENDPOINT, azure_ad_token_provider=_tp, api_version=API_VERSION)
 
 KICKOFF = "A live-site incident was triggered. Run the incident response end to end."
+
+
+def _kickoff(base: str, target: str | None, event: str | None) -> str:
+    """DEMO_MODE only: bias THIS RUN's kickoff message so the operator's sandbox target is the
+    primary suspect. This is a per-run user message — it never changes the agents' persistent
+    instructions or the deterministic gate, so production (DEMO_MODE off) is unaffected."""
+    if not (settings.DEMO_MODE and target):
+        return base
+    return (f"The operator just triggered a '{event or 'fault'}' on the service '{target}'. "
+            f"Treat '{target}' as the PRIMARY suspect and BEGIN the investigation there — inspect "
+            f"'{target}' first (get_service_health('{target}'), get_logs('{target}'), "
+            f"get_container_app_status('{target}')). Only name a DIFFERENT root cause if correlate() "
+            f"explicitly ranks another service higher with clear evidence. " + base)
 
 # ---- tool implementations (reuse the KQL + gate) --------------------------
 _KNOWN = None
@@ -87,6 +104,24 @@ def t_get_logs(a):
                            "samples": s.to_dict("records")})
     except Exception as e:
         return json.dumps({"service": svc, "error": str(e)[:120]})
+# ---- LIVE AZURE RESOURCE tools (read-only Container Apps state via az CLI) ----
+from shared import azure_resources as _azr  # noqa: E402
+
+
+def _tail(a):
+    try:
+        return max(1, min(50, int(a.get("tail", 20))))
+    except Exception:
+        return 20
+
+
+def t_ca_status(a):    return json.dumps(_azr.get_container_app_status(_svc(a.get("service_name", ""))))
+def t_ca_revisions(a): return json.dumps(_azr.get_container_app_revisions(_svc(a.get("service_name", ""))))
+def t_ca_limits(a):    return json.dumps(_azr.get_container_app_resource_limits(_svc(a.get("service_name", ""))))
+def t_ca_logs(a):      return json.dumps(_azr.get_container_app_logs(_svc(a.get("service_name", "")), _tail(a)))
+def t_ca_syslogs(a):   return json.dumps(_azr.get_container_app_system_logs(_svc(a.get("service_name", "")), _tail(a)))
+
+
 def t_gate(a):
     d = decide(float(a.get("confidence",0)), _svc(a.get("service_name","")), str(a.get("version",""))[:20])
     obs.log_decision(_TRACE, _svc(a.get("service_name","")), d.confidence, d.action, d.threshold)
@@ -132,7 +167,10 @@ DISPATCH = {"detect": t_detect, "get_alerts": t_alerts, "detect_trend": t_trend,
             "correlate": t_correlate, "assess_impact": t_impact, "apply_gate": t_gate,
             "match_runbook": t_match_runbook, "write_runbook": t_write_runbook,
             "write_postmortem": t_write_postmortem,
-            "get_service_health": t_service_health, "get_logs": t_get_logs}
+            "get_service_health": t_service_health, "get_logs": t_get_logs,
+            "get_container_app_status": t_ca_status, "get_container_app_revisions": t_ca_revisions,
+            "get_container_app_resource_limits": t_ca_limits, "get_container_app_logs": t_ca_logs,
+            "get_container_app_system_logs": t_ca_syslogs}
 
 
 def _safe_dispatch(name, args):
@@ -173,18 +211,46 @@ TOOLDEFS = {
                               {"service_name": {"type": "string"}}, ["service_name"]),
     "get_logs": _fn("get_logs", "Error/warning counts + recent log lines for a service from the Logs table.",
                     {"service_name": {"type": "string"}}, ["service_name"]),
+    "get_container_app_status": _fn("get_container_app_status",
+        "LIVE Azure Container App state (read-only): provisioning/running status, active revision, replica count, CPU/memory limits.",
+        {"service_name": {"type": "string"}}, ["service_name"]),
+    "get_container_app_revisions": _fn("get_container_app_revisions",
+        "LIVE Azure revision history (read-only): each revision's active flag, traffic %, replicas, health, created time. Shows a recent deploy.",
+        {"service_name": {"type": "string"}}, ["service_name"]),
+    "get_container_app_resource_limits": _fn("get_container_app_resource_limits",
+        "LIVE Azure resource limits (read-only): CPU/memory per container and min/max replica scale bounds.",
+        {"service_name": {"type": "string"}}, ["service_name"]),
+    "get_container_app_logs": _fn("get_container_app_logs",
+        "LIVE Azure CONSOLE logs (read-only): recent app stdout/stderr from the running replica.",
+        {"service_name": {"type": "string"}, "tail": {"type": "integer"}}, ["service_name"]),
+    "get_container_app_system_logs": _fn("get_container_app_system_logs",
+        "LIVE Azure SYSTEM logs (read-only): platform events (scaling, health, restarts) + a restart-signal count.",
+        {"service_name": {"type": "string"}, "tail": {"type": "integer"}}, ["service_name"]),
 }
 
 AGENTS = [
-    ("Commander", ["detect", "get_alerts", "detect_trend", "get_service_health", "get_logs"],
+    ("Commander", ["detect", "get_alerts", "detect_trend", "get_service_health", "get_logs", "get_container_app_status"],
      "You are the Incident Commander. Call detect(), get_alerts(), detect_trend(); then for each anomalous "
-     "service call get_service_health() and get_logs() to gather REAL evidence. Output terse lines citing that "
-     "evidence, e.g. 'payment-service /health=degraded, Logs 38 errors (score 95)', 'ALERT checkout-api Sev2', "
+     "service call get_service_health(), get_logs(), and get_container_app_status() to gather REAL evidence "
+     "(telemetry + LIVE Azure resource state). Output terse lines citing that evidence, e.g. "
+     "'payment-service /health=degraded, Azure running/1 replica, Logs 38 errors (score 95)', 'ALERT checkout-api Sev2', "
      "'TREND checkout-api → breach ~15m'. No prose, no next-steps. End with 'Correlator →'."),
-    ("Correlator", ["correlate", "get_logs"],
-     "You are the Correlator. For EACH alert call correlate(alert_service, alert_time_iso); optionally get_logs(root_service) "
-     "for supporting error evidence. Output ONE line per alert ONLY: '<alert> ROOT CAUSE <service> <version> | conf <0.xxx> "
-     "| <ratio>x anomaly, upstream, <n>m before | Logs <e> errors'. Numbers from tools only. No prose. End with 'Impact →'."),
+    ("Correlator", ["correlate", "get_logs", "get_container_app_status", "get_container_app_revisions",
+                    "get_container_app_resource_limits", "get_container_app_logs", "get_container_app_system_logs"],
+     "You are the Correlator + Diagnostician. For the top alert: (1) call correlate(alert_service, alert_time_iso) "
+     "for the ADX root-cause ranking + confidence; (2) call get_container_app_revisions() and get_container_app_status() "
+     "on the root-cause candidate for LIVE Azure resource evidence (recent revision, running state, replicas, CPU/mem); "
+     "(3) call get_logs() and get_container_app_system_logs() (and get_container_app_logs() if useful) for log evidence. "
+     "Then output a DIAGNOSIS with EXACTLY these labelled lines, numbers from tools only:\n"
+     "Root cause: <service> <version>\n"
+     "Evidence (ADX): <ratio>x anomaly, upstream, <n>m before deploy | conf <0.xxx>\n"
+     "Evidence (Azure resource): revision <rev> active, <runningStatus>, <r> replicas, <cpu>/<mem>\n"
+     "Evidence (logs): <e> errors/<w> warns, <restartSignals> restart signals; <one representative line>\n"
+     "Recommended action: <rollback to previous revision | restart | scale> \n"
+     "Confidence: <0.xxx>\n"
+     "Human approval required: <YES if conf < 0.70, else NO — the Gate makes the binding call>\n"
+     "If any live-Azure tool returns available=false, write 'Evidence (Azure resource): unavailable (<note>)' and "
+     "continue with ADX + logs. Never invent numbers. End with 'Impact →'."),
     ("Impact", ["assess_impact"],
      "You are the Impact analyst. Call assess_impact(service_name) for each root cause. "
      "Output ONE line per affected service ONLY: '<service> <ratio>x latency (degraded)'. No prose. End with 'Gate →'."),
@@ -240,7 +306,10 @@ def _copilot():
         return _COPILOT_ID
     tools = [TOOLDEFS[t] for t in ("detect", "get_alerts", "detect_trend", "correlate",
                                    "assess_impact", "apply_gate", "match_runbook", "write_runbook",
-                                   "get_service_health", "get_logs")]
+                                   "get_service_health", "get_logs",
+                                   "get_container_app_status", "get_container_app_revisions",
+                                   "get_container_app_resource_limits", "get_container_app_logs",
+                                   "get_container_app_system_logs")]
     instr = ("You are CRE Copilot, an SRE assistant for the live incident console. Answer questions about "
              "the CURRENT live-site state using your tools — anomalies (detect), alerts (get_alerts), "
              "rising trends (detect_trend), root cause + confidence (correlate), blast radius (assess_impact), "
@@ -312,12 +381,15 @@ def _verifier_agent():
     global _VER_ID
     if _VER_ID:
         return _VER_ID
-    tools = [TOOLDEFS[t] for t in ("get_service_health", "get_logs", "assess_impact")]
+    tools = [TOOLDEFS[t] for t in ("get_service_health", "get_logs", "assess_impact",
+                                   "get_container_app_status", "get_container_app_revisions",
+                                   "get_container_app_system_logs")]
     instr = ("You are the Verifier — you INDEPENDENTLY confirm recovery AFTER remediation. Call "
-             "get_service_health(service_name) and get_logs(service_name) (and assess_impact if useful). Confirm the "
-             "service status is healthy, its dependencies are healthy, and error counts are low. Output ONE line: "
-             "'RECOVERY CONFIRMED — <service> healthy, deps healthy, <n> errors' OR 'NOT CONFIRMED — <reason>'. "
-             "Evidence only, no prose.")
+             "get_service_health(service_name), get_logs(service_name), and get_container_app_status(service_name) "
+             "(plus get_container_app_system_logs / get_container_app_revisions if useful). Confirm the service /health "
+             "is healthy, its LIVE Azure revision is running/healthy with no fresh restart signals, and error counts are "
+             "low. Output ONE line: 'RECOVERY CONFIRMED — <service> healthy, Azure revision <rev> running, <n> errors' OR "
+             "'NOT CONFIRMED — <reason>'. Evidence only, no prose.")
     existing = {a.name: a for a in client.beta.assistants.list(limit=100).data if a.name == "CRE-Verifier"}
     if "CRE-Verifier" in existing:
         a = client.beta.assistants.update(existing["CRE-Verifier"].id, model=MODEL, instructions=instr, tools=tools)
@@ -350,6 +422,68 @@ def run():
         print(f"\n{'='*68}\n  {name}  (hosted assistant {aid})\n{'='*68}\n{text}")
 
 
+def _arg_target(args: dict) -> str:
+    """The service a tool call is acting on — a REAL tool input, surfaced so each agent card can
+    show its input target (never fabricated; empty if the tool takes no service)."""
+    if not isinstance(args, dict):
+        return ""
+    return str(args.get("service_name") or args.get("alert_service") or args.get("service") or "")
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _humanize(tool: str, out: str) -> str:
+    """A short, human-readable summary DERIVED FROM THE REAL (full) tool output — e.g. '3 anomalies
+    found', 'top: inventory v9.9.9 conf 0.82'. Display metadata only; it never alters the tool
+    result, the KQL, the correlation, or the gate. Falls back to a raw snippet if parsing fails."""
+    try:
+        d = json.loads(out) if isinstance(out, str) else out
+    except Exception:
+        d = None
+    ln = len(d) if isinstance(d, list) else 0
+    if tool == "detect":
+        return f"{ln} anomal{'y' if ln == 1 else 'ies'} found" if ln else "no anomalies"
+    if tool == "get_alerts":
+        sev = d[0].get("severity") if ln and isinstance(d[0], dict) else ""
+        return (f"{ln} alert(s)" + (f", top {sev}" if sev else "")) if ln else "no alerts"
+    if tool == "detect_trend":
+        return f"{ln} rising trend(s)" if ln else "no rising trends"
+    if tool == "correlate":
+        if ln and isinstance(d[0], dict):
+            r = d[0]
+            return f"top: {r.get('Service')} {r.get('Version', '')} conf {float(r.get('confidence', 0)):.2f}"
+        return "no correlation candidates"
+    if tool == "assess_impact":
+        if ln:
+            w = max(d, key=lambda x: x.get("LatencyIncrease", 0))
+            return f"{ln} downstream affected; worst {w.get('AffectedService')} {w.get('LatencyIncrease')}x"
+        return "no downstream impact"
+    if isinstance(d, dict):
+        if tool == "apply_gate":
+            return f"{d.get('action')} · conf {d.get('confidence')} vs threshold {d.get('threshold')}"
+        if tool == "match_runbook":
+            return f"matched {d.get('runbookId')}" if d.get("match") else "no runbook — novel incident"
+        if tool == "get_service_health":
+            return f"{d.get('service')} {d.get('status')}"
+        if tool == "get_logs":
+            return f"{d.get('errors', 0)} errors / {d.get('warns', 0)} warns"
+        if tool == "get_container_app_status":
+            return (f"{d.get('service')} {d.get('runningStatus')}, rev {d.get('activeRevision')}"
+                    if d.get("available") else f"{d.get('service')} unavailable")
+        if tool == "get_container_app_revisions":
+            return f"{d.get('count', 0)} revision(s)" if d.get("available") else "revisions unavailable"
+        if tool == "get_container_app_resource_limits":
+            return (f"cpu {d.get('cpu')} / mem {d.get('memory')}" if d.get("available") else "limits unavailable")
+        if tool == "get_container_app_logs":
+            return f"{d.get('count', 0)} console log lines" if d.get("available") else "console logs unavailable"
+        if tool == "get_container_app_system_logs":
+            return (f"{d.get('count', 0)} system events, {d.get('restartSignals', 0)} restart signals"
+                    if d.get("available") else "system logs unavailable")
+    return (str(out)[:70] + "…") if out and len(str(out)) > 70 else str(out or "")
+
+
 def _consume(stream, thread_id, name):
     """Yield token/tool_call events from a run stream; handle tool calls + continue."""
     with stream as s:
@@ -364,10 +498,21 @@ def _consume(stream, thread_id, name):
                 outs = []
                 for tc in run_obj.required_action.submit_tool_outputs.tool_calls:
                     obs.log_tool(_TRACE, name, tc.function.name)
-                    yield {"type": "tool_call", "agent": name, "tool": tc.function.name}
                     args = json.loads(tc.function.arguments or "{}")
+                    tgt = _arg_target(args)
+                    yield {"type": "tool_call", "agent": name, "tool": tc.function.name, "target": tgt,
+                           "args": args, "trace": _TRACE, "ts": _now_ms()}
+                    _t0 = time.time()
                     out = _safe_dispatch(tc.function.name, args)
-                    yield {"type": "evidence", "agent": name, "tool": tc.function.name, "summary": str(out)[:180]}
+                    _ms = int((time.time() - _t0) * 1000)
+                    _inj = security.scan_untrusted(out) if tc.function.name in _UNTRUSTED_TOOLS else None
+                    if _inj and not _inj["clean"]:
+                        obs.log("security.prompt_injection_flagged", tool=tc.function.name,
+                                matches=[m["tag"] for m in _inj["matches"]], trace=_TRACE)
+                    yield {"type": "evidence", "agent": name, "tool": tc.function.name, "target": tgt,
+                           "summary": str(out)[:180], "human": _humanize(tc.function.name, out),
+                           "args": args, "raw": str(out)[:6000], "ms": _ms, "trace": _TRACE, "ts": _now_ms(),
+                           "injection": _inj}
                     outs.append({"tool_call_id": tc.id, "output": out})
                 nxt = client.beta.threads.runs.submit_tool_outputs_stream(
                     thread_id=thread_id, run_id=run_obj.id, tool_outputs=outs)
@@ -375,19 +520,20 @@ def _consume(stream, thread_id, name):
                 return
 
 
-def run_stream_sync():
-    """Sync generator of UI events across the hosted assistants (bridged to SSE by the server)."""
+def run_stream_sync(target: str | None = None, event: str | None = None):
+    """Sync generator of UI events across the hosted assistants (bridged to SSE by the server).
+    In DEMO_MODE, `target` (the sandbox service) becomes the primary suspect for this run."""
     global _TRACE
     _TRACE = obs.new_trace()
-    obs.log("incident.run_started", trace=_TRACE)
+    obs.log("incident.run_started", trace=_TRACE, target=target, sim_event=event)
     agents = _ensure_assistants()
     thread = client.beta.threads.create()
-    client.beta.threads.messages.create(thread_id=thread.id, role="user", content=KICKOFF)
-    yield {"type": "incident_start", "trace": _TRACE}
+    client.beta.threads.messages.create(thread_id=thread.id, role="user", content=_kickoff(KICKOFF, target, event))
+    yield {"type": "incident_start", "trace": _TRACE, "target": target if settings.DEMO_MODE else None, "ts": _now_ms()}
     for name, aid in agents:
-        yield {"type": "agent_start", "agent": name}
+        yield {"type": "agent_start", "agent": name, "trace": _TRACE, "ts": _now_ms()}
         yield from _consume(client.beta.threads.runs.stream(thread_id=thread.id, assistant_id=aid), thread.id, name)
-        yield {"type": "agent_end", "agent": name}
+        yield {"type": "agent_end", "agent": name, "trace": _TRACE, "ts": _now_ms()}
     obs.log("incident.run_done", trace=_TRACE)
     yield {"type": "done"}
 
@@ -412,6 +558,9 @@ def _dynamic_agent():
     if _DYN_ID:
         return _DYN_ID
     tools = [TOOLDEFS[t] for t in ("detect", "get_alerts", "detect_trend", "get_service_health", "get_logs",
+                                   "get_container_app_status", "get_container_app_revisions",
+                                   "get_container_app_resource_limits", "get_container_app_logs",
+                                   "get_container_app_system_logs",
                                    "correlate", "assess_impact", "match_runbook", "apply_gate")]  # all read-only/pure
     existing = {a.name: a for a in client.beta.assistants.list(limit=100).data if a.name == "CRE-Orchestrator"}
     if "CRE-Orchestrator" in existing:
@@ -443,9 +592,21 @@ def _consume_dynamic(stream, thread_id, name, counter):
                         yield {"type": "tool_call", "agent": name, "tool": f"(step cap reached — {MAX_STEPS})"}
                         return
                     obs.log_tool(_TRACE, name, tc.function.name)
-                    yield {"type": "tool_call", "agent": name, "tool": tc.function.name}
-                    out = _safe_dispatch(tc.function.name, json.loads(tc.function.arguments or "{}"))
-                    yield {"type": "evidence", "agent": name, "tool": tc.function.name, "summary": str(out)[:180]}
+                    args = json.loads(tc.function.arguments or "{}")
+                    tgt = _arg_target(args)
+                    yield {"type": "tool_call", "agent": name, "tool": tc.function.name, "target": tgt,
+                           "args": args, "trace": _TRACE, "ts": _now_ms()}
+                    _t0 = time.time()
+                    out = _safe_dispatch(tc.function.name, args)
+                    _ms = int((time.time() - _t0) * 1000)
+                    _inj = security.scan_untrusted(out) if tc.function.name in _UNTRUSTED_TOOLS else None
+                    if _inj and not _inj["clean"]:
+                        obs.log("security.prompt_injection_flagged", tool=tc.function.name,
+                                matches=[m["tag"] for m in _inj["matches"]], trace=_TRACE)
+                    yield {"type": "evidence", "agent": name, "tool": tc.function.name, "target": tgt,
+                           "summary": str(out)[:180], "human": _humanize(tc.function.name, out),
+                           "args": args, "raw": str(out)[:6000], "ms": _ms, "trace": _TRACE, "ts": _now_ms(),
+                           "injection": _inj}
                     outs.append({"tool_call_id": tc.id, "output": out})
                 nxt = client.beta.threads.runs.submit_tool_outputs_stream(
                     thread_id=thread_id, run_id=run_obj.id, tool_outputs=outs)
@@ -453,21 +614,23 @@ def _consume_dynamic(stream, thread_id, name, counter):
                 return
 
 
-def run_stream_dynamic():
-    """Autonomous investigation: the Commander picks tools step by step. Falls back to fixed on error."""
+def run_stream_dynamic(target: str | None = None, event: str | None = None):
+    """Autonomous investigation: the Commander picks tools step by step. Falls back to fixed on error.
+    In DEMO_MODE, `target` (the sandbox service) becomes the primary suspect for this run."""
     global _TRACE
     _TRACE = obs.new_trace()
-    obs.log("incident.dynamic_started", trace=_TRACE)
-    yield {"type": "incident_start", "trace": _TRACE, "mode": "dynamic"}
-    yield {"type": "agent_start", "agent": "Commander"}
+    obs.log("incident.dynamic_started", trace=_TRACE, target=target, sim_event=event)
+    yield {"type": "incident_start", "trace": _TRACE, "mode": "dynamic",
+           "target": target if settings.DEMO_MODE else None, "ts": _now_ms()}
+    yield {"type": "agent_start", "agent": "Commander", "trace": _TRACE, "ts": _now_ms()}
     try:
         aid = _dynamic_agent()
         tid = client.beta.threads.create().id
-        client.beta.threads.messages.create(thread_id=tid, role="user", content=DYN_KICKOFF)
+        client.beta.threads.messages.create(thread_id=tid, role="user", content=_kickoff(DYN_KICKOFF, target, event))
         counter = [0]
         yield from _consume_dynamic(client.beta.threads.runs.stream(thread_id=tid, assistant_id=aid),
                                     tid, "Commander", counter)
-        yield {"type": "agent_end", "agent": "Commander"}
+        yield {"type": "agent_end", "agent": "Commander", "trace": _TRACE, "ts": _now_ms()}
         obs.log("incident.dynamic_done", trace=_TRACE, steps=counter[0])
         yield {"type": "done", "mode": "dynamic"}
     except Exception as e:
@@ -475,7 +638,7 @@ def run_stream_dynamic():
         yield {"type": "token", "agent": "Commander",
                "text": f"\n[dynamic mode error: {str(e)[:70]} — falling back to fixed pipeline]\n"}
         yield {"type": "agent_end", "agent": "Commander"}
-        yield from run_stream_sync()   # safe fallback
+        yield from run_stream_sync(target, event)   # safe fallback (keeps the sandbox target)
 
 
 if __name__ == "__main__":

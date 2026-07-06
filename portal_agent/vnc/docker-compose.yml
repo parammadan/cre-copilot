@@ -6,7 +6,7 @@ services:
     container_name: cre-portal-vnc
     ports:
       - "6080:6080"   # noVNC (embedded in the console iframe)
-      - "9222:9222"   # Chromium CDP (backend drives navigation)
+      - "9222:9223"   # host 9222 → container 9223 (socat) → Chromium CDP 127.0.0.1:9222
     volumes:
       - cre-portal-profile:/profile   # persists the Azure login across restarts
     shm_size: "1gb"

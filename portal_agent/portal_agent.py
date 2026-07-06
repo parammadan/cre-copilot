@@ -96,6 +96,23 @@ def _plan_for(event: str, app: str) -> list:
     return [(first[0], first[1], 5000), (ls, "Log stream (live)", 8000)]
 
 
+# Stage → blade the Portal Agent shows, so it MIRRORS what each agent is doing on the SAME
+# target. blade=None means "don't navigate" (Gate just evaluates confidence, stay on the page).
+# Clean stage script → one blade per stage. blade=None means DO NOT navigate (timeline only).
+# The story reads: Overview → Metrics → Revisions → Log Stream → Verify (no jitter).
+_STAGE_BLADE = {
+    "commander":   ("",                   "Overview"),                 # open the resource once
+    "detector":    ("metrics",            "Metrics"),                  # first detect() → Metrics once
+    "correlator":  ("revisionManagement", "Revisions / deployment"),  # Revisions once
+    "switch":      ("logstream",          "Log stream (root cause)"),  # root cause changed → new service
+    "impact":      ("logstream",          "Log stream (blast radius)"),# Log Stream once
+    "gate":        (None,                 "Confidence decision"),      # do NOT navigate — timeline only
+    "runbook":     ("logstream",          "Log stream (runbook)"),     # stay stable on Log Stream
+    "verifier":    ("",                   "Overview (recovery)"),      # refresh Overview once
+    "verifier_ls": ("logstream",          "Log stream (recovery)"),    # then Log Stream once
+}
+
+
 class PortalSession:
     """A long-lived, headed, READ-ONLY portal session that reacts to investigation stages.
     Owns Playwright on ONE dedicated thread (thread-safe); receives stage commands via a queue;
@@ -117,14 +134,18 @@ class PortalSession:
         self._ls_url = _deeplink(self.app, "logstream")
         self._reached_ls = False
         self._ls_since = None
+        self._cur_blade = None   # the blade currently shown (for de-dup — no re-nav for animation)
+        self._blade_ts = {}      # blade → last navigation time (30s cooldown, no re-nav within window)
         self._novnc = False   # set true if we connect to the container's Chromium over CDP
         self._cmd = queue.Queue()
         self._ev = queue.Queue()
         threading.Thread(target=self._run, daemon=True).start()
 
     # --- public API (called from the web thread) ---
-    def advance(self, stage: str):
-        self._cmd.put(("nav", stage))
+    def advance(self, stage: str, target: str | None = None):
+        # target = the service the CURRENT stage is analyzing → the Portal Agent mirrors THAT
+        # service (never independently picks a different one).
+        self._cmd.put(("nav", (stage, target)))
 
     def stop(self):
         self._cmd.put(("stop", None))
@@ -143,16 +164,37 @@ class PortalSession:
         d.update(k)
         self._ev.put(d)
 
+    def _retarget(self, target: str | None):
+        """Point the session at the service the CURRENT stage is analyzing (canonicalized).
+        Only ever moves to a REAL Container App — never independently invents a target."""
+        if not target:
+            return
+        app = canonical(target)
+        if app in REAL_SERVICES and app != self.app:
+            self.app = app
+            self._ls_url = _deeplink(self.app, "logstream")
+            self._reached_ls = False        # a fresh service → the log-stream watch resets
+            self._ls_since = None
+            self._cur_blade = None           # force a nav on the new service
+            self._blade_ts = {}              # reset the per-blade cooldown for the new service
+
     def _next_step(self, stage: str):
-        # Once on Log Stream, later stages just DWELL there (the page streams on its own) — url=None
-        # means "don't re-navigate, just hold so live updates keep flowing".
-        if self._reached_ls:
-            return (None, "Log stream (live)", 6000)
-        if self.idx < len(self.plan):
-            step = self.plan[self.idx]
-            self.idx += 1
-            return step
-        return (None, "Log stream (live)", 6000)
+        """Clean stage script: one blade per stage, no jitter. Returns (url, label, dwell).
+        label=None means SILENT no-navigation (the browser stays stable; no timeline spam):
+          * Gate (blade None) never navigates.
+          * If already on the blade, or we navigated to it within 30s, we don't reload.
+        switch (real root-cause change) and the Verifier refresh always navigate."""
+        key = (stage or "").strip().lower()
+        blade, label = _STAGE_BLADE.get(key, ("logstream", "Log stream (live)"))
+        if blade is None:                    # Gate etc. — never navigate; the timeline explains it
+            return (None, None, 0)
+        force = key in ("switch", "verifier", "verifier_ls")   # real transitions always refresh
+        recent = (time.time() - self._blade_ts.get(blade, 0)) < 30
+        if (blade == self._cur_blade or recent) and not force:
+            return (None, None, 0)           # already shown / within 30s → keep the browser stable
+        self._cur_blade = blade
+        self._blade_ts[blade] = time.time()
+        return (_deeplink(self.app, blade), f"{label} · {self.app}", 2500)   # ≤3s so the browser keeps pace
 
     def _run(self):
         self._emit("portal_status", status="Opening browser")
@@ -215,15 +257,33 @@ class PortalSession:
                     self._emit("portal_status", status="Complete")
                     break
                 if cmd == "nav":
-                    url, label, dwell = self._next_step(arg)
+                    # CATCH UP: if newer stages are already queued, jump to the LATEST nav so the
+                    # browser never lags behind the investigation (skip the intermediate pages).
+                    while not self._cmd.empty():
+                        try:
+                            c2, a2 = self._cmd.get_nowait()
+                        except queue.Empty:
+                            break
+                        if c2 == "nav":
+                            arg = a2                    # a newer stage supersedes this one
+                        else:                           # 'stop' — put it back, handle after this nav
+                            self._cmd.put((c2, a2))
+                            break
+                    stage, target = arg if isinstance(arg, tuple) else (arg, None)
+                    self._retarget(target)              # mirror the current stage's target
+                    url, label, dwell = self._next_step(stage)
+                    if label is None:
+                        continue                        # silent no-nav → browser stays stable, no spam
                     self._emit("portal_status", status="Inspecting")
                     try:
                         if url:
-                            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                            # wait_until="commit" returns as soon as navigation starts — we DON'T block
+                            # on the portal's full (slow) load, so the browser keeps pace with the agents.
+                            page.goto(url, wait_until="commit", timeout=12000)
                             if url == self._ls_url and not self._reached_ls:
                                 self._reached_ls = True
                                 self._ls_since = time.time()   # start the Log Stream watch clock
-                        page.wait_for_timeout(dwell)   # pause on the page so the user can observe it
+                        page.wait_for_timeout(dwell)   # brief pause so the page is observable (≤3s)
                         self._emit("portal_evidence", message=f"Portal Agent → {label} ({self.app})")
                     except Exception as e:
                         self._emit("portal_evidence", message=f"Portal Agent skipped {label} ({str(e)[:50]})")

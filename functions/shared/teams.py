@@ -93,5 +93,12 @@ def post_card(webhook_url: str, payload: dict) -> dict:
     """POST the card to the Teams Incoming Webhook (dry-run if no URL configured)."""
     if not webhook_url:
         return {"posted": False, "reason": "TEAMS_WEBHOOK_URL not set", "preview": payload}
+    # DATA EXFILTRATION GUARD — deny-by-default egress allowlist (defense in depth).
+    from shared import security
+    eg = security.egress_allowed(webhook_url)
+    if not eg["allowed"]:
+        from shared import obs
+        obs.log("security.egress_blocked", host=eg["host"], reason=eg["reason"])
+        return {"posted": False, "reason": f"egress blocked by allowlist: {eg['host']}"}
     r = requests.post(webhook_url, json=payload, timeout=10)
     return {"posted": r.status_code in (200, 202), "status": r.status_code}
